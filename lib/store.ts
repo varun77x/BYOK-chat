@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { DEFAULT_THEME, ThemeTokens, PRESETS } from "./theme";
 import { ChatMessage } from "./api";
+import { descendantThreadIds } from "./threads";
 
 export type ProviderConfig = {
   providerId: string;
@@ -89,6 +90,7 @@ type State = {
     anchorMessageId: string
   ) => string;
   renameThread: (chatId: string, threadId: string, title: string) => void;
+  deleteThread: (chatId: string, threadId: string) => void;
   clearAllChats: () => void;
 
   // Actions — theme
@@ -346,6 +348,28 @@ export const useStore = create<State>()(
               : c
           ),
         })),
+      deleteThread: (chatId, threadId) =>
+        set((s) => {
+          const chat = s.chats.find((c) => c.id === chatId);
+          if (!chat) return s;
+          // Cannot delete the root thread.
+          if (threadId === chat.rootThreadId) return s;
+          const toDelete = new Set([
+            threadId,
+            ...descendantThreadIds(chat, threadId),
+          ]);
+          return {
+            chats: s.chats.map((c) =>
+              c.id === chatId
+                ? {
+                    ...c,
+                    updatedAt: Date.now(),
+                    threads: c.threads.filter((t) => !toDelete.has(t.id)),
+                  }
+                : c
+            ),
+          };
+        }),
       clearAllChats: () => set({ chats: [], activeChatId: null }),
 
       setTheme: (t, presetId) =>

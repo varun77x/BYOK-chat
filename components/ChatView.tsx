@@ -15,6 +15,7 @@ import {
   GitBranch,
   ChevronRight,
   Pencil,
+  Trash2,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { StoredMessage, Thread } from "@/lib/store";
@@ -30,6 +31,7 @@ import {
   getThread,
 } from "@/lib/threads";
 import { toast } from "@/lib/toast";
+import { confirmDialog } from "@/lib/confirm";
 import { Markdown } from "./Markdown";
 import { Modal } from "./Modal";
 import clsx from "clsx";
@@ -57,6 +59,7 @@ export function ChatView() {
   const createBranch = useStore((s) => s.createBranch);
   const renameChat = useStore((s) => s.renameChat);
   const renameThread = useStore((s) => s.renameThread);
+  const deleteThread = useStore((s) => s.deleteThread);
   const updateProvider = useStore((s) => s.updateProvider);
   const historyTurns = useStore((s) => s.historyTurns);
   const generalInstructions = useStore((s) => s.generalInstructions);
@@ -157,6 +160,26 @@ export function ChatView() {
     const newThreadId = createBranch(chat.id, activeThread.id, messageId);
     setActiveThreadId(newThreadId);
     toast("Branch created");
+  };
+
+  const handleDeleteBranch = async () => {
+    if (!chat || !activeThread || activeThread.parentThreadId === null) return;
+    const label = branchLabel(chat, activeThread);
+    const ok = await confirmDialog({
+      title: "Delete branch?",
+      message: `"${label}" and any child branches will be permanently removed.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const parentId = activeThread.parentThreadId;
+    deleteThread(chat.id, activeThread.id);
+    // Navigate back to parent if we're still on the deleted thread.
+    const updated = useStore.getState().chats.find((c) => c.id === chat.id);
+    if (updated && !updated.threads.some((t) => t.id === activeThread.id)) {
+      setActiveThreadId(parentId);
+    }
+    toast("Branch deleted");
   };
 
   const send = async () => {
@@ -357,6 +380,15 @@ export function ChatView() {
                   <Pencil size={12} />
                 </button>
               ))}
+            {activeThread && activeThread.parentThreadId !== null && !renamingBranch && (
+              <button
+                onClick={handleDeleteBranch}
+                className="ml-0.5 p-1 rounded-app text-muted hover:text-danger hover:bg-surface-2"
+                title="Delete this branch"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
           </div>
         )}
 

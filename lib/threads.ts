@@ -72,6 +72,23 @@ export function childBranches(
   );
 }
 
+/** All descendant thread IDs (children, grandchildren, etc.) of a thread. */
+export function descendantThreadIds(chat: Chat, threadId: string): string[] {
+  const result: string[] = [];
+  const stack = [threadId];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    const children = (chat.threads ?? []).filter(
+      (t) => t.parentThreadId === cur
+    );
+    for (const child of children) {
+      result.push(child.id);
+      stack.push(child.id);
+    }
+  }
+  return result;
+}
+
 /** Total messages across every thread in the chat. */
 export function countMessages(chat: Chat): number {
   return (chat.threads ?? []).reduce((n, t) => n + t.messages.length, 0);
