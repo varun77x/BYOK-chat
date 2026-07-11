@@ -1,0 +1,867 @@
+"use client";
+
+import Image from "next/image";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Paperclip,
+  Send,
+  Square,
+  ImagePlus,
+  X,
+  Bot,
+  User,
+  Maximize2,
+  Copy,
+  GitBranch,
+  ChevronRight,
+  Pencil,
+} from "lucide-react";
+import { useStore } from "@/lib/store";
+import type { StoredMessage, Thread } from "@/lib/store";
+import { streamChat, fileToDataUrl, generateImage, ChatMessage, ContentPart } from "@/lib/api";
+import { isVisionModel, isImageGenModel, getProvider } from "@/lib/providers";
+import { truncateHistory } from "@/lib/history";
+import {
+  buildContext,
+  toApiMessages,
+  threadPath,
+  childBranches,
+  branchLabel,
+  getThread,
+} from "@/lib/threads";
+import { toast } from "@/lib/toast";
+import { Markdown } from "./Markdown";
+import { Modal } from "./Modal";
+import clsx from "clsx";
+
+type Attachment = { name: string; dataUrl: string };
+
+function messageText(message: ChatMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .filter((p): p is { type: "text"; text: string } => p.type === "text")
+    .map((p) => p.text)
+    .join("\n\n");
+}
+
+export function ChatView() {
+  const hydrated = useStore((s) => s.hydrated);
+  const chats = useStore((s) => s.chats);
+  const activeChatId = useStore((s) => s.activeChatId);
+  const providers = useStore((s) => s.providers);
+  const activeProviderId = useStore((s) => s.activeProviderId);
+  const newChat = useStore((s) => s.newChat);
+  const setActiveChat = useStore((s) => s.setActiveChat);
+  const appendMessage = useStore((s) => s.appendMessage);
+  const updateLastAssistantMessage = useStore((s) => s.updateLastAssistantMessage);
+  const createBranch = useStore((s) => s.createBranch);
+  const renameChat = useStore((s) => s.renameChat);
+  const renameThread = useStore((s) => s.renameThread);
+  const updateProvider = useStore((s) => s.updateProvider);
+  const historyTurns = useStore((s) => s.historyTurns);
+  const generalInstructions = useStore((s) => s.generalInstructions);
+  const spaces = useStore((s) => s.spaces);
+
+  const provider = providers[activeProviderId];
+  const providerPreset = getProvider(activeProviderId);
+  const availableModels = useMemo(() => {
+    const merged = [
+      ...(providerPreset?.suggestedModels ?? []),
+      ...provider.customModels,
+    ];
+    if (provider.model && !merged.includes(provider.model)) merged.unshift(provider.model);
+    return merged;
+  }, [providerPreset, provider.customModels, provider.model]);
+
+  const chat = useMemo(
+    () => chats.find((c) => c.id === activeChatId) ?? null,
+    [chats, activeChatId]
+  );
+
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  // Reset to the root thread whenever the active chat changes.
+  useEffect(() => {
+    const c = chats.find((x) => x.id === activeChatId);
+    setActiveThreadId(c ? c.rootThreadId : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChatId]);
+
+  const activeThread = useMemo(() => {
+    if (!chat || !chat.threads) return null;
+    const wanted = activeThreadId ? getThread(chat, activeThreadId) : undefined;
+    return wanted ?? getThread(chat, chat.rootThreadId) ?? chat.threads[0] ?? null;
+  }, [chat, activeThreadId]);
+
+  // Close any in-progress breadcrumb rename when the active thread changes.
+  useEffect(() => {
+    setRenamingBranch(false);
+  }, [activeThreadId]);
+
+  const path = useMemo(
+    () => (chat && activeThread ? threadPath(chat, activeThread.id) : []),
+    [chat, activeThread]
+  );
+  const isRoot = activeThread?.parentThreadId == null;
+
+  const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [renamingBranch, setRenamingBranch] = useState(false);
+  const [branchDraft, setBranchDraft] = useState("");
+  const cancelRenameRef = useRef(false);
+
+  const modelSupportsVision = isVisionModel(activeProviderId, provider.model);
+  const modelIsImageGen = isImageGenModel(activeProviderId, provider.model);
+
+  useEffect(() => {
+    if (hydrated && !activeChatId && chats.length > 0) {
+      setActiveChat(chats[0].id);
+    }
+  }, [hydrated, activeChatId, chats, setActiveChat]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activeThread?.messages.length, activeThread?.id, sending]);
+
+  const canSend = !!provider.apiKey && !!provider.model && !!provider.baseUrl;
+
+  const onPickFiles = async (files: FileList | null) => {
+    if (!files) return;
+    const items: Attachment[] = [];
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith("image/")) continue;
+      const dataUrl = await fileToDataUrl(f);
+      items.push({ name: f.name, dataUrl });
+    }
+    setAttachments((prev) => [...prev, ...items]);
+  };
+
+  const copyMessage = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Copied");
+    } catch {
+      toast("Copy failed");
+    }
+  };
+
+  const branchFrom = (messageId: string) => {
+    if (!chat || !activeThread) return;
+    const newThreadId = createBranch(chat.id, activeThread.id, messageId);
+    setActiveThreadId(newThreadId);
+    toast("Branch created");
+  };
+
+  const send = async () => {
+    if (sending) return;
+    const trimmed = input.trim();
+    if (!trimmed && attachments.length === 0) return;
+    if (!canSend) {
+      setError("Set your API key, base URL, and model in Settings first.");
+      return;
+    }
+    setError(null);
+
+    let chatId = activeChatId;
+    let threadId = activeThreadId;
+    if (!chatId) {
+      chatId = newChat();
+      threadId = useStore.getState().chats.find((c) => c.id === chatId)!.rootThreadId;
+      setActiveThreadId(threadId);
+    }
+    if (!threadId) {
+      threadId = useStore.getState().chats.find((c) => c.id === chatId)!.rootThreadId;
+    }
+
+    const content: ContentPart[] | string =
+      attachments.length > 0
+        ? [
+            ...(trimmed ? [{ type: "text" as const, text: trimmed }] : []),
+            ...attachments.map((a) => ({
+              type: "image_url" as const,
+              image_url: { url: a.dataUrl },
+            })),
+          ]
+        : trimmed;
+
+    // Title the chat from the first message on the ROOT thread only.
+    const chatBefore = useStore.getState().chats.find((c) => c.id === chatId);
+    const targetThreadBefore = chatBefore?.threads.find((t) => t.id === threadId);
+    const isFirstRootMessage =
+      threadId === chatBefore?.rootThreadId &&
+      (targetThreadBefore?.messages.length ?? 0) === 0;
+
+    appendMessage(chatId, threadId, { role: "user", content });
+    appendMessage(chatId, threadId, { role: "assistant", content: "" });
+
+    if (isFirstRootMessage && trimmed) {
+      renameChat(chatId, trimmed.slice(0, 40));
+    }
+
+    setInput("");
+    setAttachments([]);
+    setSending(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      if (modelIsImageGen) {
+        const images = await generateImage({
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+          model: provider.model,
+          prompt: trimmed,
+          signal: controller.signal,
+        });
+        const md = images
+          .map((img, i) => {
+            const src = img.url ?? (img.b64_json ? `data:image/png;base64,${img.b64_json}` : "");
+            return src ? `![generated ${i + 1}](${src})` : "";
+          })
+          .filter(Boolean)
+          .join("\n\n");
+        updateLastAssistantMessage(chatId, threadId, md || "(no image returned)");
+      } else {
+        // Build the API context from the active thread: inherited ancestor
+        // context (parents up to their anchor) + this thread's messages.
+        const latest = useStore.getState().chats.find((c) => c.id === chatId)!;
+        const ctx = buildContext(latest, threadId).filter(
+          (m, idx, arr) => !(idx === arr.length - 1 && m.role === "assistant")
+        );
+        const trimmedCtx = truncateHistory(toApiMessages(ctx), historyTurns);
+
+        // System message = general + space instructions (general first).
+        // Rebuilt each send so the latest instructions always apply.
+        const chatSpace = latest.spaceId
+          ? spaces.find((sp) => sp.id === latest.spaceId)
+          : null;
+        const systemText = [generalInstructions, chatSpace?.instructions]
+          .map((s) => s?.trim())
+          .filter(Boolean)
+          .join("\n\n");
+        const withSystem: ChatMessage[] = systemText
+          ? [{ role: "system", content: systemText }, ...trimmedCtx]
+          : trimmedCtx;
+
+        let full = "";
+        // Throttle store writes to ~1 per 80ms during streaming; each flush
+        // persists state and re-parses growing markdown.
+        const FLUSH_INTERVAL_MS = 80;
+        let lastFlush = 0;
+        let pending = false;
+        try {
+          for await (const delta of streamChat({
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey,
+            model: provider.model,
+            messages: withSystem,
+            signal: controller.signal,
+          })) {
+            full += delta;
+            const now =
+              typeof performance !== "undefined" ? performance.now() : Date.now();
+            if (now - lastFlush >= FLUSH_INTERVAL_MS) {
+              updateLastAssistantMessage(chatId, threadId, full);
+              lastFlush = now;
+              pending = false;
+            } else {
+              pending = true;
+            }
+          }
+        } finally {
+          if (pending || full.length > 0) {
+            updateLastAssistantMessage(chatId, threadId, full);
+          }
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      updateLastAssistantMessage(chatId, threadId, `**Error:** ${msg}`);
+    } finally {
+      setSending(false);
+      abortRef.current = null;
+    }
+  };
+
+  const stop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setSending(false);
+  };
+
+  const messages = activeThread?.messages ?? [];
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <header className="border-b px-4 py-2.5 flex items-center gap-3 text-sm shrink-0">
+        <div className="text-muted">
+          Provider: <span className="text-text font-medium">{activeProviderId}</span>
+        </div>
+      </header>
+
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+        {chat && path.length > 1 && (
+          <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
+            {path.map((t, i) => (
+              <Fragment key={t.id}>
+                {i > 0 && <ChevronRight size={12} className="text-muted" />}
+                <button
+                  onClick={() => setActiveThreadId(t.id)}
+                  className={clsx(
+                    "px-1.5 py-0.5 rounded-app truncate max-w-[180px]",
+                    i === path.length - 1
+                      ? "text-text font-medium"
+                      : "text-muted hover:text-text hover:bg-surface-2"
+                  )}
+                  title={i === 0 ? "Main" : branchLabel(chat, t)}
+                >
+                  {i === 0 ? "Main" : branchLabel(chat, t)}
+                </button>
+              </Fragment>
+            ))}
+            {activeThread &&
+              activeThread.parentThreadId !== null &&
+              (renamingBranch ? (
+                <input
+                  autoFocus
+                  value={branchDraft}
+                  onChange={(e) => setBranchDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                    } else if (e.key === "Escape") {
+                      cancelRenameRef.current = true;
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  onBlur={() => {
+                    if (!cancelRenameRef.current) {
+                      renameThread(chat.id, activeThread.id, branchDraft);
+                    }
+                    cancelRenameRef.current = false;
+                    setRenamingBranch(false);
+                  }}
+                  placeholder="Branch name"
+                  className="ml-1 bg-surface-2 border rounded-app px-2 py-0.5 text-xs outline-none focus:border-accent min-w-[120px]"
+                />
+              ) : (
+                <button
+                  onClick={() => {
+                    setBranchDraft(activeThread.title ?? "");
+                    setRenamingBranch(true);
+                  }}
+                  className="ml-1 p-1 rounded-app text-muted hover:text-text hover:bg-surface-2"
+                  title="Rename this branch"
+                >
+                  <Pencil size={12} />
+                </button>
+              ))}
+          </div>
+        )}
+
+        {!hydrated ? null : !chat ? (
+          <EmptyState onNewChat={newChat} />
+        ) : messages.length === 0 ? (
+          isRoot ? (
+            <EmptyChat providerName={activeProviderId} model={provider.model} />
+          ) : (
+            <div className="h-full flex flex-col items-center justify-center gap-2 text-center px-4">
+              <GitBranch size={28} className="text-muted" />
+              <div className="text-sm text-muted max-w-sm">
+                New branch. Messages here continue from the point you branched —
+                the main thread won&apos;t see them.
+              </div>
+            </div>
+          )
+        ) : (
+          <div className="max-w-5xl mx-auto py-6 px-4 space-y-4">
+            {messages.map((m) => (
+              <MessageRow
+                key={m.id}
+                message={m}
+                branches={
+                  chat && activeThread
+                    ? childBranches(chat, activeThread.id, m.id)
+                    : []
+                }
+                branchLabelFor={(t) => (chat ? branchLabel(chat, t) : "Branch")}
+                onCopy={copyMessage}
+                onBranch={branchFrom}
+                onNavigate={setActiveThreadId}
+                onRename={(threadId, title) => {
+                  if (chat) renameThread(chat.id, threadId, title);
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t p-3 shrink-0">
+        <div className="max-w-5xl mx-auto">
+          {error && <div className="mb-2 text-sm text-danger">{error}</div>}
+          {!isRoot && (
+            <div className="mb-2 text-xs text-muted flex items-center gap-1.5">
+              <GitBranch size={12} />
+              Replying in branch
+              <span className="text-text">
+                {chat && activeThread ? branchLabel(chat, activeThread) : ""}
+              </span>
+            </div>
+          )}
+          {attachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachments.map((a, i) => (
+                <div key={i} className="relative group">
+                  <img
+                    src={a.dataUrl}
+                    alt={a.name}
+                    className="w-16 h-16 object-cover rounded-app border"
+                  />
+                  <button
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((_, j) => j !== i))
+                    }
+                    className="absolute -top-1 -right-1 bg-danger text-white rounded-full p-0.5"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mb-2 flex items-center gap-2 text-xs">
+            <label className="text-muted">Model</label>
+            <div className="relative">
+              <select
+                value={provider.model}
+                onChange={(e) =>
+                  updateProvider(activeProviderId, { model: e.target.value })
+                }
+                disabled={availableModels.length === 0}
+                className="appearance-none bg-surface-2 border rounded-app pl-2.5 pr-7 py-1 font-mono text-xs outline-none focus:border-accent disabled:opacity-50 cursor-pointer"
+              >
+                {availableModels.length === 0 && <option value="">no models</option>}
+                {availableModels.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-muted text-[10px]">
+                ▾
+              </span>
+            </div>
+            {modelSupportsVision && (
+              <span className="bg-surface-2 border rounded-app px-1.5 py-0.5 text-muted">
+                vision
+              </span>
+            )}
+            {modelIsImageGen && (
+              <span className="bg-surface-2 border rounded-app px-1.5 py-0.5 text-muted">
+                image-gen
+              </span>
+            )}
+          </div>
+          <div className="flex items-end gap-2 bg-surface-2 border rounded-app p-2">
+            {modelSupportsVision && (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    onPickFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="p-2 text-muted hover:text-text"
+                  title="Attach image"
+                >
+                  <Paperclip size={18} />
+                </button>
+              </>
+            )}
+            {modelIsImageGen && (
+              <div className="p-2 text-muted" title="Image generation mode">
+                <ImagePlus size={18} />
+              </div>
+            )}
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder={
+                modelIsImageGen
+                  ? "Describe the image to generate…"
+                  : "Type here.."
+              }
+              rows={1}
+              className="flex-1 bg-transparent outline-none resize-none py-1.5 text-sm max-h-40"
+              style={{ minHeight: 28 }}
+            />
+            <button
+              onClick={() => setExpanded(true)}
+              className="p-2 text-muted hover:text-text"
+              title="Expand editor"
+            >
+              <Maximize2 size={16} />
+            </button>
+            {sending ? (
+              <button
+                onClick={stop}
+                className="p-2 rounded-app bg-accent text-white hover:opacity-90"
+                title="Stop"
+              >
+                <Square size={16} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                onClick={send}
+                disabled={!canSend}
+                className={clsx(
+                  "p-2 rounded-app bg-accent text-accent-fg transition",
+                  canSend ? "hover:opacity-90" : "opacity-40 cursor-not-allowed"
+                )}
+                title="Send (Enter)"
+              >
+                <Send size={16} />
+              </button>
+            )}
+          </div>
+          {!canSend && (
+            <div className="text-xs text-muted mt-2">
+              ! Add your API key in Settings to send messages.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <Modal open={expanded} onClose={() => setExpanded(false)} title="Compose" wide>
+        <div className="flex flex-col gap-3">
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((a, i) => (
+                <div key={i} className="relative group">
+                  <img
+                    src={a.dataUrl}
+                    alt={a.name}
+                    className="w-20 h-20 object-cover rounded-app border"
+                  />
+                  <button
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((_, j) => j !== i))
+                    }
+                    className="absolute -top-1 -right-1 bg-danger text-white rounded-full p-0.5"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                (e.ctrlKey || e.metaKey) &&
+                e.key === "Enter" &&
+                !sending &&
+                canSend
+              ) {
+                e.preventDefault();
+                setExpanded(false);
+                send();
+              }
+            }}
+            placeholder="Type your message… (Ctrl/Cmd+Enter to send, Enter for newline)"
+            autoFocus
+            className="w-full bg-surface-2 border rounded-app p-3 text-sm outline-none focus:border-accent resize-none"
+            style={{ minHeight: "55vh" }}
+          />
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted">
+              Ctrl/Cmd + Enter to send · Enter inserts newline
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setExpanded(false)}
+                className="px-3 py-1.5 rounded-app border text-sm hover:bg-surface-2"
+              >
+                Close
+              </button>
+              {sending ? (
+                <button
+                  onClick={() => stop()}
+                  className="px-3 py-1.5 rounded-app bg-danger text-white text-sm hover:opacity-90 inline-flex items-center gap-1.5"
+                >
+                  <Square size={12} fill="currentColor" /> Stop
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    setExpanded(false);
+                    send();
+                  }}
+                  disabled={!canSend || (!input.trim() && attachments.length === 0)}
+                  className={clsx(
+                    "px-3 py-1.5 rounded-app bg-accent text-accent-fg text-sm inline-flex items-center gap-1.5",
+                    canSend && (input.trim() || attachments.length > 0)
+                      ? "hover:opacity-90"
+                      : "opacity-40 cursor-not-allowed"
+                  )}
+                >
+                  <Send size={12} /> Send
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+function EmptyState({ onNewChat }: { onNewChat: () => void }) {
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-3 text-center px-4">
+      <Image
+        src="/atom-logo.png"
+        alt="Atom"
+        width={72}
+        height={72}
+        priority
+        className="mb-1 rounded-app bg-white p-2"
+      />
+      <div className="text-lg font-medium">Welcome to BYOK Chat</div>
+      <div className="text-sm text-muted max-w-md">
+        Bring your own DeepSeek, OpenRouter, or OpenAI-compatible API key.
+        Everything runs client-side.
+      </div>
+      <button
+        onClick={() => onNewChat()}
+        className="mt-2 px-4 py-2 rounded-app bg-accent text-accent-fg text-sm hover:opacity-90"
+      >
+        Start a new chat
+      </button>
+    </div>
+  );
+}
+
+function EmptyChat({ providerName, model }: { providerName: string; model: string }) {
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-2 text-center px-4">
+      <div className="text-sm text-muted">
+        Chatting with <span className="text-text font-mono">{model || "no model"}</span> via{" "}
+        <span className="text-text">{providerName}</span>
+      </div>
+    </div>
+  );
+}
+
+function MessageRow({
+  message,
+  branches,
+  branchLabelFor,
+  onCopy,
+  onBranch,
+  onNavigate,
+  onRename,
+}: {
+  message: StoredMessage;
+  branches: Thread[];
+  branchLabelFor: (t: Thread) => string;
+  onCopy: (text: string) => void;
+  onBranch: (messageId: string) => void;
+  onNavigate: (threadId: string) => void;
+  onRename: (threadId: string, title: string) => void;
+}) {
+  const isUser = message.role === "user";
+  const text = messageText(message);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
+  const [branchDraft, setBranchDraft] = useState("");
+  const cancelEditRef = useRef(false);
+
+  const openBranches = () => {
+    if (branches.length === 1) onNavigate(branches[0].id);
+    else setPickerOpen((v) => !v);
+  };
+
+  return (
+    <div className={clsx("flex gap-3 group", isUser ? "flex-row-reverse" : "flex-row")}>
+      <div
+        className={clsx(
+          "w-7 h-7 rounded-full flex items-center justify-center shrink-0",
+          isUser ? "bg-user-bubble text-user-bubble-fg" : "bg-surface-2 text-muted"
+        )}
+      >
+        {isUser ? <User size={14} /> : <Bot size={14} />}
+      </div>
+      <div
+        className={clsx(
+          "flex flex-col gap-1 min-w-0 max-w-[85%]",
+          isUser ? "items-end" : "items-start"
+        )}
+      >
+        <MessageBubble message={message} />
+
+        {text && (
+          <div
+            className={clsx(
+              "flex items-center gap-1 text-muted",
+              isUser ? "flex-row-reverse" : "flex-row"
+            )}
+          >
+            <button
+              onClick={() => onCopy(text)}
+              className="p-1 rounded-app hover:text-text hover:bg-surface-2 opacity-0 group-hover:opacity-100 transition"
+              title="Copy"
+            >
+              <Copy size={13} />
+            </button>
+            {!isUser && (
+              <button
+                onClick={() => onBranch(message.id)}
+                className="p-1 rounded-app hover:text-text hover:bg-surface-2 opacity-0 group-hover:opacity-100 transition"
+                title="Branch from here"
+              >
+                <GitBranch size={13} />
+              </button>
+            )}
+          </div>
+        )}
+
+        {branches.length > 0 && (
+          <div className="relative">
+            <button
+              onClick={openBranches}
+              className="inline-flex items-center gap-1 text-xs text-muted hover:text-text border rounded-app px-1.5 py-0.5"
+              title="View branches"
+            >
+              <GitBranch size={12} />
+              {branches.length} branch{branches.length === 1 ? "" : "es"}
+            </button>
+            {pickerOpen && branches.length > 1 && (
+              <div className="absolute z-20 mt-1 bg-surface border rounded-app shadow-lg py-1 min-w-[200px]">
+                {branches.map((b) => (
+                  <div key={b.id} className="flex items-center gap-1 px-1">
+                    {editingBranchId === b.id ? (
+                      <input
+                        autoFocus
+                        value={branchDraft}
+                        onChange={(e) => setBranchDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.currentTarget.blur();
+                          } else if (e.key === "Escape") {
+                            cancelEditRef.current = true;
+                            e.currentTarget.blur();
+                          }
+                        }}
+                        onBlur={() => {
+                          if (!cancelEditRef.current) onRename(b.id, branchDraft);
+                          cancelEditRef.current = false;
+                          setEditingBranchId(null);
+                        }}
+                        placeholder="Branch name"
+                        className="flex-1 min-w-0 bg-surface-2 border rounded-app px-2 py-1 text-xs outline-none focus:border-accent"
+                      />
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => {
+                            setPickerOpen(false);
+                            onNavigate(b.id);
+                          }}
+                          className="flex-1 min-w-0 text-left px-2 py-1.5 text-xs hover:bg-surface-2 rounded-app truncate"
+                        >
+                          {branchLabelFor(b)}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingBranchId(b.id);
+                            setBranchDraft(b.title ?? "");
+                          }}
+                          className="p-1 text-muted hover:text-text shrink-0"
+                          title="Rename branch"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const MessageBubble = memo(function MessageBubble({
+  message,
+}: {
+  message: StoredMessage;
+}) {
+  const isUser = message.role === "user";
+  const parts = typeof message.content === "string" ? null : message.content;
+  const text = messageText(message);
+  const images =
+    parts?.filter(
+      (p): p is { type: "image_url"; image_url: { url: string } } =>
+        p.type === "image_url"
+    ) ?? [];
+
+  return (
+    <div
+      className={clsx(
+        "rounded-app px-3.5 py-2.5 text-sm",
+        isUser
+          ? "bg-user-bubble text-user-bubble-fg"
+          : "bg-assistant-bubble text-assistant-bubble-fg"
+      )}
+    >
+      {images.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {images.map((im, i) => (
+            <img
+              key={i}
+              src={im.image_url.url}
+              alt=""
+              className="max-w-full max-h-64 rounded-app"
+            />
+          ))}
+        </div>
+      )}
+      {text ? (
+        isUser ? (
+          <div className="whitespace-pre-wrap break-words">{text}</div>
+        ) : (
+          <Markdown>{text}</Markdown>
+        )
+      ) : !isUser ? (
+        <div className="text-muted text-sm italic">…</div>
+      ) : null}
+    </div>
+  );
+});
