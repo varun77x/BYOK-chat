@@ -300,12 +300,6 @@ export function ChatView() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <header className="border-b px-4 py-2.5 flex items-center gap-3 text-sm shrink-0">
-        <div className="text-muted">
-          Provider: <span className="text-text font-medium">{activeProviderId}</span>
-        </div>
-      </header>
-
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
         {chat && path.length > 1 && (
           <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
@@ -459,6 +453,10 @@ export function ChatView() {
                 ▾
               </span>
             </div>
+            <span className="text-muted select-none">·</span>
+            <span className="text-muted">
+              Provider: <span className="text-text font-medium">{activeProviderId}</span>
+            </span>
             {modelSupportsVision && (
               <span className="bg-surface-2 border rounded-app px-1.5 py-0.5 text-muted">
                 vision
