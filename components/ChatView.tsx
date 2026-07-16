@@ -114,6 +114,13 @@ export function ChatView() {
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const scrollPositions = useRef<Map<string, number>>(new Map());
+  const activeThreadIdRef = useRef<string | null>(null);
+
+  // Keep the ref in sync so scroll handler always sees the latest thread id.
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
   const [expanded, setExpanded] = useState(false);
   const [renamingBranch, setRenamingBranch] = useState(false);
   const [branchDraft, setBranchDraft] = useState("");
@@ -136,6 +143,11 @@ export function ChatView() {
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     setShowScrollButton(!atBottom);
+    // Remember scroll position for the active thread.
+    const tid = activeThreadIdRef.current;
+    if (tid) {
+      scrollPositions.current.set(tid, el.scrollTop);
+    }
   };
 
   useEffect(() => {
@@ -144,6 +156,18 @@ export function ChatView() {
     el.addEventListener("scroll", checkScrollPosition, { passive: true });
     return () => el.removeEventListener("scroll", checkScrollPosition);
   }, []);
+
+  // Restore saved scroll position when switching threads.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !activeThreadId) return;
+    const saved = scrollPositions.current.get(activeThreadId);
+    if (saved !== undefined) {
+      requestAnimationFrame(() => {
+        el.scrollTop = saved;
+      });
+    }
+  }, [activeThreadId]);
 
   // Also re-check when messages change (content grows during streaming).
   useEffect(() => {
