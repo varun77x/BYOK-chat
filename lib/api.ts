@@ -24,6 +24,33 @@ function joinUrl(base: string, path: string): string {
   return `${b}/${p}`;
 }
 
+/** Simple delay helper. */
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Retry an async function up to `maxRetries` times with exponential backoff.
+ * Only retries on network/fetch errors — not on AbortError.
+ * Returns the result of the first successful attempt.
+ */
+export async function withRetry<T>(
+  fn: (attempt: number) => Promise<T>,
+  maxRetries = 3,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (e) {
+      lastError = e;
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
+      if (attempt < maxRetries) {
+        await delay(Math.pow(2, attempt - 1) * 1000); // 1s, 2s, 4s, ...
+      }
+    }
+  }
+  throw lastError;
+}
+
 /**
  * Stream chat completions from any OpenAI-compatible endpoint.
  * Yields incremental delta strings.

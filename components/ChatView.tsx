@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { StoredMessage, Thread } from "@/lib/store";
-import { streamChat, fileToDataUrl, generateImage, ChatMessage, ContentPart } from "@/lib/api";
+import { streamChat, fileToDataUrl, generateImage, withRetry, ChatMessage, ContentPart } from "@/lib/api";
 import { isVisionModel, isImageGenModel, getProvider } from "@/lib/providers";
 import { truncateHistory } from "@/lib/history";
 import {
@@ -259,13 +259,17 @@ export function ChatView() {
 
     try {
       if (modelIsImageGen) {
-        const images = await generateImage({
-          baseUrl: provider.baseUrl,
-          apiKey: provider.apiKey,
-          model: provider.model,
-          prompt: trimmed,
-          signal: controller.signal,
-        });
+        const images = await withRetry(
+          () =>
+            generateImage({
+              baseUrl: provider.baseUrl,
+              apiKey: provider.apiKey,
+              model: provider.model,
+              prompt: trimmed,
+              signal: controller.signal,
+            }),
+          3,
+        );
         const md = images
           .map((img, i) => {
             const src = img.url ?? (img.b64_json ? `data:image/png;base64,${img.b64_json}` : "");
@@ -300,9 +304,15 @@ export function ChatView() {
         // Throttle store writes to ~1 per 80ms during streaming; each flush
         // persists state and re-parses growing markdown.
         const FLUSH_INTERVAL_MS = 80;
-        let lastFlush = 0;
-        let pending = false;
-        try {
+
+        await withRetry(async (attempt) => {
+          // Reset stream state on each retry.
+          full = "";
+          let lastFlush = 0;
+          let pending = false;
+          if (attempt > 1) {
+            toast(`Retrying (attempt ${attempt}/3)...`);
+          }
           for await (const delta of streamChat({
             baseUrl: provider.baseUrl,
             apiKey: provider.apiKey,
@@ -321,11 +331,10 @@ export function ChatView() {
               pending = true;
             }
           }
-        } finally {
           if (pending || full.length > 0) {
             updateLastAssistantMessage(chatId, threadId, full);
           }
-        }
+        }, 3);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
