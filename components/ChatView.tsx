@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Pencil,
   Trash2,
+  ArrowDown,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { StoredMessage, Thread } from "@/lib/store";
@@ -127,11 +128,33 @@ export function ChatView() {
     }
   }, [hydrated, activeChatId, chats, setActiveChat]);
 
+  const [showScrollButton, setShowScrollButton] = useState(false);
+
+  // Track whether the user has scrolled away from the bottom.
+  const checkScrollPosition = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setShowScrollButton(!atBottom);
+  };
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [activeThread?.messages.length, activeThread?.id, sending]);
+    el.addEventListener("scroll", checkScrollPosition, { passive: true });
+    return () => el.removeEventListener("scroll", checkScrollPosition);
+  }, []);
+
+  // Also re-check when messages change (content grows during streaming).
+  useEffect(() => {
+    checkScrollPosition();
+  }, [activeThread?.messages.length, sending]);
+
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   const canSend = !!provider.apiKey && !!provider.model && !!provider.baseUrl;
 
@@ -323,7 +346,7 @@ export function ChatView() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto relative">
         {chat && path.length > 1 && (
           <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
             {path.map((t, i) => (
@@ -427,6 +450,16 @@ export function ChatView() {
               />
             ))}
           </div>
+        )}
+
+        {showScrollButton && (
+          <button
+            onClick={scrollToBottom}
+            className="fixed bottom-32 right-6 z-20 bg-surface-2 border rounded-full p-2 shadow-md text-muted hover:text-text hover:bg-surface-3 transition-all"
+            aria-label="Scroll to bottom"
+          >
+            <ArrowDown size={18} />
+          </button>
         )}
       </div>
 
