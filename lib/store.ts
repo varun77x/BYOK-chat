@@ -63,6 +63,10 @@ type State = {
   historyTurns: number; // 0 = unlimited
   generalInstructions: string;
 
+  // Avatars — an emoji, or a data: URL for an uploaded image; "" = default icon
+  userAvatar: string;
+  assistantAvatar: string;
+
   // Spaces
   spaces: Space[];
 
@@ -101,6 +105,7 @@ type State = {
   // Actions — chat behavior
   setHistoryTurns: (n: number) => void;
   setGeneralInstructions: (text: string) => void;
+  setAvatar: (role: "user" | "assistant", value: string) => void;
 
   // Actions — spaces
   newSpace: () => string;
@@ -184,6 +189,8 @@ export const useStore = create<State>()(
 
       historyTurns: 20,
       generalInstructions: "",
+      userAvatar: "",
+      assistantAvatar: "",
 
       spaces: [],
 
@@ -387,6 +394,8 @@ export const useStore = create<State>()(
 
       setHistoryTurns: (n) => set({ historyTurns: Math.max(0, Math.floor(n)) }),
       setGeneralInstructions: (text) => set({ generalInstructions: text }),
+      setAvatar: (role, value) =>
+        set(role === "user" ? { userAvatar: value } : { assistantAvatar: value }),
 
       newSpace: () => {
         const id = makeId();
@@ -430,6 +439,8 @@ export const useStore = create<State>()(
         themePresetId: s.themePresetId,
         historyTurns: s.historyTurns,
         generalInstructions: s.generalInstructions,
+        userAvatar: s.userAvatar,
+        assistantAvatar: s.assistantAvatar,
         spaces: s.spaces,
       }),
       // Migrate legacy chats synchronously as state is rehydrated, so no

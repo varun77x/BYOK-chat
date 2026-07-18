@@ -50,6 +50,34 @@ function messageText(message: ChatMessage): string {
     .join("\n\n");
 }
 
+// The little circle beside each message. Uses the user's chosen avatar (emoji
+// or uploaded image) from settings, falling back to the default User/Bot icon.
+function MessageAvatar({ isUser }: { isUser: boolean }) {
+  const value = useStore((s) => (isUser ? s.userAvatar : s.assistantAvatar));
+  const base = clsx(
+    "w-7 h-7 rounded-full flex items-center justify-center shrink-0 overflow-hidden",
+    isUser ? "bg-user-bubble text-user-bubble-fg" : "bg-surface-2 text-muted"
+  );
+  if (value.startsWith("data:")) {
+    return (
+      <div className={base}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={value} alt="" className="w-full h-full object-cover" />
+      </div>
+    );
+  }
+  if (value) {
+    return (
+      <div className={base}>
+        <span className="text-base leading-none">{value}</span>
+      </div>
+    );
+  }
+  return (
+    <div className={base}>{isUser ? <User size={14} /> : <Bot size={14} />}</div>
+  );
+}
+
 export function ChatView() {
   const hydrated = useStore((s) => s.hydrated);
   const chats = useStore((s) => s.chats);
@@ -142,10 +170,11 @@ export function ChatView() {
   const [promptNav, setPromptNav] = useState({ hasPrev: false, hasNext: false });
 
   // --- Prompt jumping ---------------------------------------------------
-  // Navigate between USER prompts. The "current" prompt is derived LIVE from
-  // scroll position on every click (never a stored counter that could drift):
-  // each user prompt has an index; we find which one sits at the top reading
-  // line right now, then move ±1 from it.
+  // Navigate between USER prompts, derived LIVE from scroll position on every
+  // click (never a stored counter that could drift). Direction-based, not an
+  // index ±1: ↓ scrolls to the first prompt BELOW the reading line, ↑ to the
+  // last prompt ABOVE it. So ↑ never "fades out" mid-prompt — as long as a
+  // prompt exists on that side, the button reaches it.
   const computePromptState = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return null;
@@ -153,33 +182,38 @@ export function ChatView() {
       container.querySelectorAll<HTMLElement>('[data-role="user"]')
     );
     const cTop = container.getBoundingClientRect().top;
-    // Keep the reading line (and scroll target) clear of the sticky branch
-    // breadcrumb when it's showing.
+    // Reading line: where a jumped-to prompt's top lands. Kept clear of the
+    // sticky branch breadcrumb when it's showing.
     const bc = container.querySelector<HTMLElement>("[data-breadcrumb]");
     const L = 12 + (bc ? bc.offsetHeight : 0);
+    // Each prompt's top relative to the viewport top (negative = scrolled past).
     const rels = els.map((e) => e.getBoundingClientRect().top - cTop);
-    // current = last prompt whose top is within the upper region of the view.
-    // We use a tolerance band (L + DETECT_TOLERANCE), not a strict line: the
-    // first prompt has ~24px of top padding above it and a prompt scrolled to
-    // just below the line is still visually "the one at the top" — a strict
-    // line would orphan both and waste the first ↑/↓ press. The band stays well
-    // under the gap between consecutive prompts, so it never skips one.
-    const DETECT_TOLERANCE = 56;
-    let cur = -1;
-    rels.forEach((r, i) => {
-      if (r <= L + DETECT_TOLERANCE) cur = i;
-    });
-    // Never leave the first prompt un-selected when scrolled to the very top.
-    if (cur === -1 && els.length > 0) cur = 0;
-    return { container, els, rels, L, cur };
+    const EPS = 4;
+    // The first prompt parks at the content's top padding, which sits BELOW the
+    // landing line L. "Next" must clear that parking spot, else ↓ at the very
+    // top just nudges the first prompt up instead of advancing to the second.
+    const pad = rels.length ? rels[0] + container.scrollTop : L;
+    const downLine = Math.max(L + EPS, pad + EPS); // "below" once a top passes this
+    const upLine = L - EPS; //                        "above" once a top is before this
+    return { container, rels, L, downLine, upLine };
   }, []);
 
   const jumpPrompt = useCallback(
     (dir: 1 | -1) => {
       const s = computePromptState();
-      if (!s || s.els.length === 0) return;
-      const targetIdx = s.cur + dir;
-      if (targetIdx < 0 || targetIdx >= s.els.length) return; // clamp at ends
+      if (!s || s.rels.length === 0) return;
+      let targetIdx = -1;
+      if (dir === 1) {
+        targetIdx = s.rels.findIndex((r) => r > s.downLine);
+      } else {
+        for (let i = s.rels.length - 1; i >= 0; i--) {
+          if (s.rels[i] < s.upLine) {
+            targetIdx = i;
+            break;
+          }
+        }
+      }
+      if (targetIdx < 0) return; // nothing on that side
       s.container.scrollTo({
         top: Math.max(0, s.container.scrollTop + s.rels[targetIdx] - s.L),
         behavior: "smooth",
@@ -190,8 +224,8 @@ export function ChatView() {
 
   const refreshPromptNav = useCallback(() => {
     const s = computePromptState();
-    const hasPrev = !!s && s.cur > 0;
-    const hasNext = !!s && s.els.length > 0 && s.cur < s.els.length - 1;
+    const hasPrev = !!s && s.rels.some((r) => r < s.upLine);
+    const hasNext = !!s && s.rels.some((r) => r > s.downLine);
     setPromptNav((p) =>
       p.hasPrev === hasPrev && p.hasNext === hasNext ? p : { hasPrev, hasNext }
     );
@@ -1017,14 +1051,7 @@ function MessageRow({
       data-role={message.role}
       className={clsx("flex gap-3 group", isUser ? "flex-row-reverse" : "flex-row")}
     >
-      <div
-        className={clsx(
-          "w-7 h-7 rounded-full flex items-center justify-center shrink-0",
-          isUser ? "bg-user-bubble text-user-bubble-fg" : "bg-surface-2 text-muted"
-        )}
-      >
-        {isUser ? <User size={14} /> : <Bot size={14} />}
-      </div>
+      <MessageAvatar isUser={isUser} />
       <div
         className={clsx(
           "flex flex-col gap-1 min-w-0 max-w-[85%]",

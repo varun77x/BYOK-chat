@@ -21,14 +21,18 @@ import clsx from "clsx";
 import { useStore } from "@/lib/store";
 import { toast } from "@/lib/toast";
 import { confirmDialog } from "@/lib/confirm";
-import { SettingsModal } from "./SettingsModal";
-import { ThemeCustomizer } from "./ThemeCustomizer";
+import { SettingsModal, type SettingsTab } from "./SettingsModal";
 import type { Chat } from "@/lib/store";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [themeOpen, setThemeOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("provider");
+
+  const openSettings = (tab: SettingsTab) => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  };
 
   const chats = useStore((s) => s.chats);
   const activeChatId = useStore((s) => s.activeChatId);
@@ -122,13 +126,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="p-2 border-t flex flex-col gap-1">
           <button
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettings("provider")}
             className="flex items-center gap-2 px-2.5 py-1.5 rounded-app text-sm text-muted hover:text-text hover:bg-surface-2"
           >
             <Settings size={16} /> Settings
           </button>
           <button
-            onClick={() => setThemeOpen(true)}
+            onClick={() => openSettings("theme")}
             className="flex items-center gap-2 px-2.5 py-1.5 rounded-app text-sm text-muted hover:text-text hover:bg-surface-2"
           >
             <Palette size={16} /> Theme
@@ -140,8 +144,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {children}
       </main>
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <ThemeCustomizer open={themeOpen} onClose={() => setThemeOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsTab}
+      />
     </div>
   );
 }
