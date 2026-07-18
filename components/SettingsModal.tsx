@@ -63,8 +63,8 @@ export function SettingsModal({
   }, [open, initialTab]);
 
   return (
-    <Modal open={open} onClose={onClose} title="Settings" wide>
-      <div className="flex gap-4 h-[62vh]">
+    <Modal open={open} onClose={onClose} title="Settings" maxW="max-w-5xl">
+      <div className="flex gap-4 h-[72vh]">
         <nav className="w-36 shrink-0 flex flex-col gap-1 border-r pr-2 overflow-y-auto">
           {TABS.map((t) => {
             const Icon = t.icon;

@@ -9,12 +9,15 @@ export function Modal({
   title,
   children,
   wide,
+  maxW,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
   wide?: boolean;
+  /** Tailwind max-w-* class to override the default width (wins over `wide`). */
+  maxW?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -34,7 +37,7 @@ export function Modal({
     >
       <div
         className={`bg-surface border rounded-app shadow-xl w-full ${
-          wide ? "max-w-3xl" : "max-w-lg"
+          maxW ?? (wide ? "max-w-3xl" : "max-w-lg")
         } max-h-[90vh] overflow-hidden flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
