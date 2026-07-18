@@ -62,7 +62,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             priority
             className="rounded-app bg-white p-0.5"
           />
-          <div className="font-semibold">BYOK</div>
+          <div className="font-display text-xl tracking-wide">MAGMO</div>
         </div>
 
         <nav className="p-2 flex flex-col gap-1 border-b">

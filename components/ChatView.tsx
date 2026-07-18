@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Paperclip,
   Send,
@@ -14,6 +14,8 @@ import {
   Copy,
   GitBranch,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   Pencil,
   Trash2,
   ArrowDown,
@@ -137,6 +139,63 @@ export function ChatView() {
   }, [hydrated, activeChatId, chats, setActiveChat]);
 
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [promptNav, setPromptNav] = useState({ hasPrev: false, hasNext: false });
+
+  // --- Prompt jumping ---------------------------------------------------
+  // Navigate between USER prompts. The "current" prompt is derived LIVE from
+  // scroll position on every click (never a stored counter that could drift):
+  // each user prompt has an index; we find which one sits at the top reading
+  // line right now, then move ±1 from it.
+  const computePromptState = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container) return null;
+    const els = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-role="user"]')
+    );
+    const cTop = container.getBoundingClientRect().top;
+    // Keep the reading line (and scroll target) clear of the sticky branch
+    // breadcrumb when it's showing.
+    const bc = container.querySelector<HTMLElement>("[data-breadcrumb]");
+    const L = 12 + (bc ? bc.offsetHeight : 0);
+    const rels = els.map((e) => e.getBoundingClientRect().top - cTop);
+    // current = last prompt whose top is within the upper region of the view.
+    // We use a tolerance band (L + DETECT_TOLERANCE), not a strict line: the
+    // first prompt has ~24px of top padding above it and a prompt scrolled to
+    // just below the line is still visually "the one at the top" — a strict
+    // line would orphan both and waste the first ↑/↓ press. The band stays well
+    // under the gap between consecutive prompts, so it never skips one.
+    const DETECT_TOLERANCE = 56;
+    let cur = -1;
+    rels.forEach((r, i) => {
+      if (r <= L + DETECT_TOLERANCE) cur = i;
+    });
+    // Never leave the first prompt un-selected when scrolled to the very top.
+    if (cur === -1 && els.length > 0) cur = 0;
+    return { container, els, rels, L, cur };
+  }, []);
+
+  const jumpPrompt = useCallback(
+    (dir: 1 | -1) => {
+      const s = computePromptState();
+      if (!s || s.els.length === 0) return;
+      const targetIdx = s.cur + dir;
+      if (targetIdx < 0 || targetIdx >= s.els.length) return; // clamp at ends
+      s.container.scrollTo({
+        top: Math.max(0, s.container.scrollTop + s.rels[targetIdx] - s.L),
+        behavior: "smooth",
+      });
+    },
+    [computePromptState]
+  );
+
+  const refreshPromptNav = useCallback(() => {
+    const s = computePromptState();
+    const hasPrev = !!s && s.cur > 0;
+    const hasNext = !!s && s.els.length > 0 && s.cur < s.els.length - 1;
+    setPromptNav((p) =>
+      p.hasPrev === hasPrev && p.hasNext === hasNext ? p : { hasPrev, hasNext }
+    );
+  }, [computePromptState]);
 
   // Track whether the user has scrolled away from the bottom.
   const checkScrollPosition = () => {
@@ -149,6 +208,7 @@ export function ChatView() {
     if (tid) {
       scrollPositions.current.set(tid, el.scrollTop);
     }
+    refreshPromptNav();
   };
 
   useEffect(() => {
@@ -174,6 +234,30 @@ export function ChatView() {
   useEffect(() => {
     checkScrollPosition();
   }, [activeThread?.messages.length, sending]);
+
+  // Keep the prompt-jump buttons' enabled state fresh on thread switch, new
+  // messages, and streaming (rAF so layout has settled before we measure).
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => refreshPromptNav());
+    return () => cancelAnimationFrame(raf);
+  }, [activeThread?.id, activeThread?.messages.length, sending, refreshPromptNav]);
+
+  // Alt+↑ / Alt+↓ jump between user prompts from anywhere (Alt avoids
+  // clashing with plain arrow keys in the composer).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        jumpPrompt(1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        jumpPrompt(-1);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [jumpPrompt]);
 
   const scrollToBottom = () => {
     const el = scrollRef.current;
@@ -470,12 +554,16 @@ export function ChatView() {
   };
 
   const messages = activeThread?.messages ?? [];
+  const userPromptCount = messages.reduce(
+    (n, m) => (m.role === "user" ? n + 1 : n),
+    0
+  );
 
   return (
     <div className="flex flex-col h-full min-h-0">
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto relative">
         {chat && path.length > 1 && (
-          <div className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
+          <div data-breadcrumb className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
             {path.map((t, i) => (
               <Fragment key={t.id}>
                 {i > 0 && <ChevronRight size={12} className="text-muted" />}
@@ -589,6 +677,29 @@ export function ChatView() {
           >
             <ArrowDown size={18} />
           </button>
+        )}
+
+        {userPromptCount >= 2 && (
+          <div className="fixed bottom-44 right-6 z-20 flex flex-col gap-1">
+            <button
+              onClick={() => jumpPrompt(-1)}
+              disabled={!promptNav.hasPrev}
+              className="bg-surface-2 border rounded-full p-2 shadow-md text-muted transition-all enabled:hover:text-text enabled:hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed"
+              aria-label="Previous prompt (Alt+Up)"
+              title="Previous prompt (Alt+↑)"
+            >
+              <ChevronUp size={18} />
+            </button>
+            <button
+              onClick={() => jumpPrompt(1)}
+              disabled={!promptNav.hasNext}
+              className="bg-surface-2 border rounded-full p-2 shadow-md text-muted transition-all enabled:hover:text-text enabled:hover:bg-surface disabled:opacity-30 disabled:cursor-not-allowed"
+              aria-label="Next prompt (Alt+Down)"
+              title="Next prompt (Alt+↓)"
+            >
+              <ChevronDown size={18} />
+            </button>
+          </div>
         )}
       </div>
 
@@ -902,7 +1013,10 @@ function MessageRow({
   };
 
   return (
-    <div className={clsx("flex gap-3 group", isUser ? "flex-row-reverse" : "flex-row")}>
+    <div
+      data-role={message.role}
+      className={clsx("flex gap-3 group", isUser ? "flex-row-reverse" : "flex-row")}
+    >
       <div
         className={clsx(
           "w-7 h-7 rounded-full flex items-center justify-center shrink-0",

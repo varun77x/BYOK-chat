@@ -33,6 +33,7 @@ export const FONT_SANS_OPTIONS: FontOption[] = [
   { label: "IBM Plex Sans", value: "var(--font-plex-sans), ui-sans-serif, sans-serif" },
   { label: "Merriweather (serif)", value: "var(--font-merriweather), Georgia, serif" },
   { label: "Georgia (serif)", value: "Georgia, ui-serif, serif" },
+  { label: "Megrim (display)", value: "var(--font-megrim), cursive" },
 ];
 
 export const FONT_MONO_OPTIONS: FontOption[] = [

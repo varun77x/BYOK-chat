@@ -6,6 +6,7 @@ import {
   Poppins,
   IBM_Plex_Sans,
   Merriweather,
+  Megrim,
   JetBrains_Mono,
   Fira_Code,
   IBM_Plex_Mono,
@@ -35,6 +36,13 @@ const merriweather = Merriweather({
   weight: ["400", "700"],
   display: "swap",
 });
+// Megrim is a display face that ships a single weight, so `weight` is required.
+const megrim = Megrim({
+  subsets: ["latin"],
+  variable: "--font-megrim",
+  weight: "400",
+  display: "swap",
+});
 const jetbrains = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-jetbrains-mono",
@@ -58,6 +66,7 @@ const fontVars = [
   poppins.variable,
   plexSans.variable,
   merriweather.variable,
+  megrim.variable,
   jetbrains.variable,
   firaCode.variable,
   plexMono.variable,
