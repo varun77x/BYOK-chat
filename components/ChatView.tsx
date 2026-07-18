@@ -17,6 +17,7 @@ import {
   Pencil,
   Trash2,
   ArrowDown,
+  RefreshCw,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { StoredMessage, Thread } from "@/lib/store";
@@ -375,6 +376,99 @@ export function ChatView() {
     setSending(false);
   };
 
+  const handleRegenerate = async (messageId: string) => {
+    if (sending || !chat || !activeThreadId || !canSend) return;
+    const thread = chat.threads.find((t) => t.id === activeThreadId);
+    if (!thread) return;
+    const idx = thread.messages.findIndex((m) => m.id === messageId);
+    // Only allow regenerating the last assistant message.
+    if (idx === -1 || idx !== thread.messages.length - 1 || thread.messages[idx].role !== "assistant") return;
+    const userMsg = thread.messages[idx - 1];
+    if (!userMsg || userMsg.role !== "user") return;
+
+    // Clear the assistant message so it shows as streaming.
+    updateLastAssistantMessage(chat.id, activeThreadId, "");
+    setSending(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      if (modelIsImageGen) {
+        const promptText = messageText(userMsg);
+        const images = await withRetry(
+          () =>
+            generateImage({
+              baseUrl: provider.baseUrl,
+              apiKey: provider.apiKey,
+              model: provider.model,
+              prompt: promptText,
+              signal: controller.signal,
+            }),
+          3,
+        );
+        const md = images
+          .map((img, i) => {
+            const src = img.url ?? (img.b64_json ? `data:image/png;base64,${img.b64_json}` : "");
+            return src ? `![generated ${i + 1}](${src})` : "";
+          })
+          .filter(Boolean)
+          .join("\n\n");
+        updateLastAssistantMessage(chat.id, activeThreadId, md || "(no image returned)");
+      } else {
+        const latest = useStore.getState().chats.find((c) => c.id === chat.id)!;
+        const ctx = buildContext(latest, activeThreadId).filter(
+          (m, idx2, arr) => !(idx2 === arr.length - 1 && m.role === "assistant")
+        );
+        const trimmedCtx = truncateHistory(toApiMessages(ctx), historyTurns);
+        const chatSpace = latest.spaceId
+          ? spaces.find((sp) => sp.id === latest.spaceId)
+          : null;
+        const systemText = [generalInstructions, chatSpace?.instructions]
+          .map((s) => s?.trim())
+          .filter(Boolean)
+          .join("\n\n");
+        const withSystem: ChatMessage[] = systemText
+          ? [{ role: "system", content: systemText }, ...trimmedCtx]
+          : trimmedCtx;
+
+        let full = "";
+        const FLUSH_INTERVAL_MS = 80;
+        await withRetry(async (attempt) => {
+          full = "";
+          let lastFlush = 0;
+          let pending = false;
+          if (attempt > 1) toast(`Retrying (attempt ${attempt}/3)...`);
+          for await (const delta of streamChat({
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey,
+            model: provider.model,
+            messages: withSystem,
+            signal: controller.signal,
+          })) {
+            full += delta;
+            const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+            if (now - lastFlush >= FLUSH_INTERVAL_MS) {
+              updateLastAssistantMessage(chat.id, activeThreadId, full);
+              lastFlush = now;
+              pending = false;
+            } else {
+              pending = true;
+            }
+          }
+          if (pending || full.length > 0) {
+            updateLastAssistantMessage(chat.id, activeThreadId, full);
+          }
+        }, 3);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      updateLastAssistantMessage(chat.id, activeThreadId, `**Error:** ${msg}`);
+    } finally {
+      setSending(false);
+      abortRef.current = null;
+    }
+  };
+
   const messages = activeThread?.messages ?? [];
 
   return (
@@ -464,7 +558,7 @@ export function ChatView() {
           )
         ) : (
           <div className="max-w-5xl mx-auto py-6 px-4 space-y-4">
-            {messages.map((m) => (
+            {messages.map((m, i) => (
               <MessageRow
                 key={m.id}
                 message={m}
@@ -476,6 +570,8 @@ export function ChatView() {
                 branchLabelFor={(t) => (chat ? branchLabel(chat, t) : "Branch")}
                 onCopy={copyMessage}
                 onBranch={branchFrom}
+                onRegenerate={handleRegenerate}
+                isLastMessage={i === messages.length - 1}
                 onNavigate={setActiveThreadId}
                 onRename={(threadId, title) => {
                   if (chat) renameThread(chat.id, threadId, title);
@@ -778,6 +874,8 @@ function MessageRow({
   branchLabelFor,
   onCopy,
   onBranch,
+  onRegenerate,
+  isLastMessage,
   onNavigate,
   onRename,
 }: {
@@ -786,6 +884,8 @@ function MessageRow({
   branchLabelFor: (t: Thread) => string;
   onCopy: (text: string) => void;
   onBranch: (messageId: string) => void;
+  onRegenerate: (messageId: string) => void;
+  isLastMessage: boolean;
   onNavigate: (threadId: string) => void;
   onRename: (threadId: string, title: string) => void;
 }) {
@@ -840,6 +940,15 @@ function MessageRow({
                 title="Branch from here"
               >
                 <GitBranch size={13} />
+              </button>
+            )}
+            {!isUser && isLastMessage && (
+              <button
+                onClick={() => onRegenerate(message.id)}
+                className="p-1 rounded-app hover:text-text hover:bg-surface-2 opacity-0 group-hover:opacity-100 transition"
+                title="Regenerate response"
+              >
+                <RefreshCw size={13} />
               </button>
             )}
           </div>
