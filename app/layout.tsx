@@ -13,6 +13,7 @@ import {
 } from "next/font/google";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { AppShell } from "@/components/AppShell";
+import { ScreenGuard } from "@/components/ScreenGuard";
 import { Toaster } from "@/components/Toaster";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
@@ -82,7 +83,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning className={fontVars}>
       <body>
         <ThemeProvider>
-          <AppShell>{children}</AppShell>
+          <ScreenGuard>
+            <AppShell>{children}</AppShell>
+          </ScreenGuard>
           <Toaster />
           <ConfirmDialog />
         </ThemeProvider>
