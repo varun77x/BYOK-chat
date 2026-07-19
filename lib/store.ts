@@ -14,7 +14,7 @@ export type ProviderConfig = {
   customModels: string[];
 };
 
-export type StoredMessage = ChatMessage & { id: string };
+export type StoredMessage = ChatMessage & { id: string; timestamp?: number; model?: string };
 
 export type Thread = {
   id: string;
@@ -82,7 +82,7 @@ type State = {
   deleteChat: (id: string) => void;
   renameChat: (id: string, title: string) => void;
   togglePinChat: (id: string) => void;
-  appendMessage: (chatId: string, threadId: string, m: ChatMessage) => string;
+  appendMessage: (chatId: string, threadId: string, m: ChatMessage, model?: string) => string;
   updateLastAssistantMessage: (
     chatId: string,
     threadId: string,
@@ -276,7 +276,7 @@ export const useStore = create<State>()(
             c.id === id ? { ...c, pinned: !c.pinned } : c
           ),
         })),
-      appendMessage: (chatId, threadId, m) => {
+      appendMessage: (chatId, threadId, m, model) => {
         const msgId = makeId();
         set((s) => ({
           chats: s.chats.map((c) =>
@@ -286,7 +286,7 @@ export const useStore = create<State>()(
                   updatedAt: Date.now(),
                   threads: c.threads.map((t) =>
                     t.id === threadId
-                      ? { ...t, messages: [...t.messages, { ...m, id: msgId }] }
+                      ? { ...t, messages: [...t.messages, { ...m, id: msgId, timestamp: Date.now(), model }] }
                       : t
                   ),
                 }

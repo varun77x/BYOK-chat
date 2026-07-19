@@ -61,10 +61,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Image
             src="/atom-logo.png"
             alt="Atom"
-            width={28}
-            height={28}
+            width={20}
+            height={20}
             priority
-            className="rounded-app bg-white p-0.5"
+            className="rounded-sm bg-white p-0.5"
           />
           <div className="font-display text-xl tracking-wide">MAGMO</div>
         </div>

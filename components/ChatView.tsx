@@ -387,8 +387,8 @@ export function ChatView() {
       threadId === chatBefore?.rootThreadId &&
       (targetThreadBefore?.messages.length ?? 0) === 0;
 
-    appendMessage(chatId, threadId, { role: "user", content });
-    appendMessage(chatId, threadId, { role: "assistant", content: "" });
+    appendMessage(chatId, threadId, { role: "user", content }, provider.model);
+    appendMessage(chatId, threadId, { role: "assistant", content: "" }, provider.model);
 
     if (isFirstRootMessage && trimmed) {
       renameChat(chatId, trimmed.slice(0, 40));
@@ -595,7 +595,7 @@ export function ChatView() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto relative">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative">
         {chat && path.length > 1 && (
           <div data-breadcrumb className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
             {path.map((t, i) => (
@@ -987,7 +987,7 @@ function EmptyState({ onNewChat }: { onNewChat: () => void }) {
         priority
         className="mb-1 rounded-app bg-white p-2"
       />
-      <div className="text-lg font-medium">Welcome to BYOK Chat</div>
+      <div className="text-lg font-medium">Welcome to MAGMO Chat</div>
       <div className="text-sm text-muted max-w-md">
         Bring your own DeepSeek, OpenRouter, or OpenAI-compatible API key.
         Everything runs client-side.
@@ -1049,7 +1049,7 @@ function MessageRow({
   return (
     <div
       data-role={message.role}
-      className={clsx("flex gap-3 group", isUser ? "flex-row-reverse" : "flex-row")}
+      className={clsx("flex gap-3 group min-w-0", isUser ? "flex-row-reverse" : "flex-row")}
     >
       <MessageAvatar isUser={isUser} />
       <div
@@ -1091,6 +1091,12 @@ function MessageRow({
               >
                 <RefreshCw size={13} />
               </button>
+            )}
+            {!isUser && message.timestamp && (
+              <span className="text-[11px] select-none opacity-0 group-hover:opacity-100 transition">
+                {new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                {message.model && ` · ${message.model}`}
+              </span>
             )}
           </div>
         )}
