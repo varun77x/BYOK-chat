@@ -740,15 +740,6 @@ export function ChatView() {
       <div className="border-t p-3 shrink-0">
         <div className="max-w-5xl mx-auto">
           {error && <div className="mb-2 text-sm text-danger">{error}</div>}
-          {!isRoot && (
-            <div className="mb-2 text-xs text-muted flex items-center gap-1.5">
-              <GitBranch size={12} />
-              Replying in branch
-              <span className="text-text">
-                {chat && activeThread ? branchLabel(chat, activeThread) : ""}
-              </span>
-            </div>
-          )}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map((a, i) => (
@@ -796,6 +787,7 @@ export function ChatView() {
             <span className="text-muted">
               Provider: <span className="text-text font-medium">{activeProviderId}</span>
             </span>
+            
             {modelSupportsVision && (
               <span className="bg-surface-2 border rounded-app px-1.5 py-0.5 text-muted">
                 vision
