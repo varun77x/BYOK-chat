@@ -45,6 +45,23 @@ export type Space = {
   updatedAt: number;
 };
 
+// Portable snapshot for export/import — mirrors the persisted (partialized) state.
+export type BackupData = {
+  providers: Record<string, ProviderConfig>;
+  activeProviderId: string;
+  chats: Chat[];
+  activeChatId: string | null;
+  theme: ThemeTokens;
+  themePresetId: string;
+  historyTurns: number;
+  generalInstructions: string;
+  userAvatar: string;
+  assistantAvatar: string;
+  spaces: Space[];
+};
+
+export type ImportMode = "replace" | "merge";
+
 type State = {
   hydrated: boolean;
   // Provider settings
@@ -96,6 +113,10 @@ type State = {
   renameThread: (chatId: string, threadId: string, title: string) => void;
   deleteThread: (chatId: string, threadId: string) => void;
   clearAllChats: () => void;
+
+  // Actions — backup
+  getBackupData: (includeKeys: boolean) => BackupData;
+  importBackup: (data: BackupData, mode: ImportMode) => void;
 
   // Actions — theme
   setTheme: (t: ThemeTokens, presetId?: string) => void;
@@ -378,6 +399,69 @@ export const useStore = create<State>()(
           };
         }),
       clearAllChats: () => set({ chats: [], activeChatId: null }),
+
+      getBackupData: (includeKeys) => {
+        const s = get();
+        const providers = includeKeys
+          ? s.providers
+          : Object.fromEntries(
+              Object.entries(s.providers).map(([id, p]) => [id, { ...p, apiKey: "" }])
+            );
+        return {
+          providers,
+          activeProviderId: s.activeProviderId,
+          chats: s.chats,
+          activeChatId: s.activeChatId,
+          theme: s.theme,
+          themePresetId: s.themePresetId,
+          historyTurns: s.historyTurns,
+          generalInstructions: s.generalInstructions,
+          userAvatar: s.userAvatar,
+          assistantAvatar: s.assistantAvatar,
+          spaces: s.spaces,
+        };
+      },
+
+      importBackup: (data, mode) =>
+        set((s) => {
+          if (mode === "replace") {
+            const chats = (data.chats ?? []).map(migrateChat);
+            const activeChatId = chats.some((c) => c.id === data.activeChatId)
+              ? data.activeChatId
+              : chats[0]?.id ?? null;
+            return {
+              providers: { ...defaultProviders(), ...(data.providers ?? {}) },
+              activeProviderId: data.activeProviderId || s.activeProviderId,
+              chats,
+              activeChatId,
+              theme: data.theme ?? s.theme,
+              themePresetId: data.themePresetId ?? s.themePresetId,
+              historyTurns:
+                typeof data.historyTurns === "number" ? data.historyTurns : s.historyTurns,
+              generalInstructions: data.generalInstructions ?? s.generalInstructions,
+              userAvatar: data.userAvatar ?? "",
+              assistantAvatar: data.assistantAvatar ?? "",
+              spaces: data.spaces ?? [],
+            };
+          }
+          // merge: add the file's chats + spaces with fresh ids (so they can't
+          // clash with existing ones), and leave current settings untouched.
+          const spaceIdMap = new Map<string, string>();
+          const spaces = (data.spaces ?? []).map((sp) => {
+            const id = makeId();
+            spaceIdMap.set(sp.id, id);
+            return { ...sp, id };
+          });
+          const chats = (data.chats ?? []).map(migrateChat).map((c) => ({
+            ...c,
+            id: makeId(),
+            spaceId: c.spaceId ? spaceIdMap.get(c.spaceId) : undefined,
+          }));
+          return {
+            chats: [...chats, ...s.chats],
+            spaces: [...spaces, ...s.spaces],
+          };
+        }),
 
       setTheme: (t, presetId) =>
         set(() => ({ theme: t, themePresetId: presetId ?? "custom" })),

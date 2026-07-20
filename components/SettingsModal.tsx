@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -13,15 +13,25 @@ import {
   Smile,
   Palette,
   Database,
+  Download,
+  Upload,
 } from "lucide-react";
 import clsx from "clsx";
 import { Modal } from "./Modal";
-import { useStore } from "@/lib/store";
+import { useStore, type ImportMode } from "@/lib/store";
 import { toast } from "@/lib/toast";
 import { confirmDialog } from "@/lib/confirm";
 import { PROVIDERS, getProvider } from "@/lib/providers";
 import { AvatarPicker } from "./AvatarPicker";
 import { ThemeSettings } from "./ThemeSettings";
+import {
+  BACKUP_FORMAT,
+  BACKUP_VERSION,
+  parseBackup,
+  summarizeBackup,
+  downloadJson,
+  type Backup,
+} from "@/lib/backup";
 
 const USER_AVATAR_PRESETS = [
   "🧑‍💻", "😎", "🦊", "🐱", "🐼", "🦁", "🐧", "🐙",
@@ -337,33 +347,164 @@ function ThemeTab() {
 
 function DataTab() {
   const clearAllChats = useStore((s) => s.clearAllChats);
+  const getBackupData = useStore((s) => s.getBackupData);
+  const importBackup = useStore((s) => s.importBackup);
+
+  const [includeKeys, setIncludeKeys] = useState(false);
+  const [pending, setPending] = useState<Backup | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const doExport = () => {
+    const backup: Backup = {
+      format: BACKUP_FORMAT,
+      version: BACKUP_VERSION,
+      exportedAt: Date.now(),
+      data: getBackupData(includeKeys),
+    };
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadJson(`byok-backup-${stamp}.json`, backup);
+    toast("Backup exported");
+  };
+
+  const onFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      setPending(parseBackup(await file.text()));
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not read that file");
+    }
+  };
+
+  const applyImport = async (mode: ImportMode) => {
+    if (!pending) return;
+    if (mode === "replace") {
+      const ok = await confirmDialog({
+        title: "Replace everything?",
+        message:
+          "This overwrites your current chats, spaces, and settings with the backup. It can't be undone.",
+        confirmLabel: "Replace",
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    importBackup(pending.data, mode);
+    setPending(null);
+    toast(mode === "replace" ? "Backup restored" : "Backup merged in");
+  };
 
   return (
-    <div className="space-y-4">
-      <div>
-        <label className="text-sm font-medium">Danger zone</label>
-        <p className="text-xs text-muted mt-0.5">
-          Irreversible actions. Your chats live only in this browser.
+    <div className="space-y-6">
+      <section className="space-y-2">
+        <label className="text-sm font-medium">Export</label>
+        <p className="text-xs text-muted">
+          Download a JSON backup of your chats, spaces, and settings.
         </p>
-      </div>
-      <button
-        onClick={async () => {
-          if (
-            await confirmDialog({
-              title: "Delete all chats?",
-              message: "This deletes your entire chat history and cannot be undone.",
-              confirmLabel: "Delete all",
-              danger: true,
-            })
-          ) {
-            clearAllChats();
-            toast("All chats cleared");
-          }
-        }}
-        className="inline-flex items-center gap-2 text-sm text-danger border border-danger/40 rounded-app px-3 py-2 hover:bg-danger/10 transition"
-      >
-        <Trash2 size={14} /> Clear all chats
-      </button>
+        <label className="flex items-center gap-2 text-sm mt-1 cursor-pointer w-fit">
+          <input
+            type="checkbox"
+            checked={includeKeys}
+            onChange={(e) => setIncludeKeys(e.target.checked)}
+            className="accent-accent"
+          />
+          Include API keys
+        </label>
+        {includeKeys && (
+          <p className="text-xs text-danger">
+            ⚠ The file will contain your API keys in plain text — keep it private.
+          </p>
+        )}
+        <div>
+          <button
+            onClick={doExport}
+            className="inline-flex items-center gap-2 text-sm border rounded-app px-3 py-2 hover:bg-surface-2 transition"
+          >
+            <Download size={14} /> Export backup
+          </button>
+        </div>
+      </section>
+
+      <section className="pt-4 border-t space-y-2">
+        <label className="text-sm font-medium">Import</label>
+        <p className="text-xs text-muted">
+          Load a backup file, then choose to replace everything or merge it in.
+        </p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            onFile(e.target.files?.[0] ?? null);
+            e.target.value = "";
+          }}
+        />
+        {!pending ? (
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="inline-flex items-center gap-2 text-sm border rounded-app px-3 py-2 hover:bg-surface-2 transition"
+          >
+            <Upload size={14} /> Choose backup file…
+          </button>
+        ) : (
+          <div className="rounded-app border bg-surface-2 p-3 space-y-2.5">
+            <div className="text-sm">
+              Loaded backup:{" "}
+              <span className="text-muted">{summarizeBackup(pending)}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => applyImport("replace")}
+                className="text-sm rounded-app px-3 py-1.5 border border-danger/50 text-danger hover:bg-danger/10 transition"
+              >
+                Replace all
+              </button>
+              <button
+                onClick={() => applyImport("merge")}
+                className="text-sm rounded-app px-3 py-1.5 bg-accent text-accent-fg hover:opacity-90 transition"
+              >
+                Merge in
+              </button>
+              <button
+                onClick={() => setPending(null)}
+                className="text-sm rounded-app px-3 py-1.5 text-muted hover:text-text transition"
+              >
+                Cancel
+              </button>
+            </div>
+            <p className="text-xs text-muted">
+              Replace overwrites everything. Merge adds these chats &amp; spaces to
+              yours and keeps your current settings.
+            </p>
+          </div>
+        )}
+      </section>
+
+      <section className="pt-4 border-t space-y-2">
+        <div>
+          <label className="text-sm font-medium">Danger zone</label>
+          <p className="text-xs text-muted mt-0.5">
+            Irreversible. Your chats live only in this browser.
+          </p>
+        </div>
+        <button
+          onClick={async () => {
+            if (
+              await confirmDialog({
+                title: "Delete all chats?",
+                message: "This deletes your entire chat history and cannot be undone.",
+                confirmLabel: "Delete all",
+                danger: true,
+              })
+            ) {
+              clearAllChats();
+              toast("All chats cleared");
+            }
+          }}
+          className="inline-flex items-center gap-2 text-sm text-danger border border-danger/40 rounded-app px-3 py-2 hover:bg-danger/10 transition"
+        >
+          <Trash2 size={14} /> Clear all chats
+        </button>
+      </section>
     </div>
   );
 }
