@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
-import { Plus, FolderKanban } from "lucide-react";
+import { Plus, FolderKanban, LayoutGrid, List } from "lucide-react";
+import clsx from "clsx";
 import { useStore } from "@/lib/store";
 
 export function SpacesGridView() {
@@ -11,6 +12,8 @@ export function SpacesGridView() {
   const chats = useStore((s) => s.chats);
   const newSpace = useStore((s) => s.newSpace);
   const hydrated = useStore((s) => s.hydrated);
+  const view = useStore((s) => s.spacesView);
+  const setView = useStore((s) => s.setSpacesView);
   const router = useRouter();
 
   const sorted = useMemo(
@@ -29,6 +32,11 @@ export function SpacesGridView() {
     router.push(`/spaces/${id}`);
   };
 
+  const countLabel = (id: string) => {
+    const n = chatCounts[id] ?? 0;
+    return `${n} chat${n === 1 ? "" : "s"}`;
+  };
+
   return (
     <div className="flex flex-col h-full min-h-0">
       <header className="border-b px-4 py-2.5 flex items-center justify-between shrink-0">
@@ -36,19 +44,51 @@ export function SpacesGridView() {
           <FolderKanban size={16} className="text-muted" />
           <span className="font-medium">Spaces</span>
         </div>
-        <button
-          onClick={create}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-app bg-accent text-accent-fg text-sm hover:opacity-90"
-        >
-          <Plus size={14} /> New space
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-app border p-0.5">
+            <button
+              onClick={() => setView("grid")}
+              className={clsx(
+                "p-1.5 rounded-app transition",
+                view === "grid"
+                  ? "bg-surface-2 text-text"
+                  : "text-muted hover:text-text"
+              )}
+              title="Grid view"
+              aria-label="Grid view"
+              aria-pressed={view === "grid"}
+            >
+              <LayoutGrid size={15} />
+            </button>
+            <button
+              onClick={() => setView("list")}
+              className={clsx(
+                "p-1.5 rounded-app transition",
+                view === "list"
+                  ? "bg-surface-2 text-text"
+                  : "text-muted hover:text-text"
+              )}
+              title="List view"
+              aria-label="List view"
+              aria-pressed={view === "list"}
+            >
+              <List size={15} />
+            </button>
+          </div>
+          <button
+            onClick={create}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-app bg-accent text-accent-fg text-sm hover:opacity-90"
+          >
+            <Plus size={14} /> New space
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="max-w-5xl mx-auto py-8 px-4">
           {!hydrated ? null : sorted.length === 0 ? (
             <EmptySpaces onCreate={create} />
-          ) : (
+          ) : view === "grid" ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {sorted.map((sp) => (
                 <Link
@@ -60,10 +100,7 @@ export function SpacesGridView() {
                     <div className="text-3xl leading-none">{sp.emoji || "📚"}</div>
                     <div className="flex-1 min-w-0">
                       <div className="font-semibold truncate">{sp.name}</div>
-                      <div className="text-xs text-muted">
-                        {chatCounts[sp.id] ?? 0} chat
-                        {(chatCounts[sp.id] ?? 0) === 1 ? "" : "s"}
-                      </div>
+                      <div className="text-xs text-muted">{countLabel(sp.id)}</div>
                     </div>
                   </div>
                   {sp.description && (
@@ -76,6 +113,31 @@ export function SpacesGridView() {
                       &ldquo;{sp.instructions}&rdquo;
                     </p>
                   )}
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {sorted.map((sp) => (
+                <Link
+                  key={sp.id}
+                  href={`/spaces/${sp.id}`}
+                  className="group flex items-center gap-3 p-2 border rounded-app bg-surface hover:border-accent transition"
+                >
+                  <div className="text-2xl leading-none shrink-0">
+                    {sp.emoji || "📚"}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold truncate text-[0.9rem]">{sp.name}</div>
+                    {sp.description && (
+                      <p className="text-[0.6rem] text-muted truncate">
+                        {sp.description}
+                      </p>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted shrink-0 whitespace-nowrap">
+                    {countLabel(sp.id)}
+                  </div>
                 </Link>
               ))}
             </div>

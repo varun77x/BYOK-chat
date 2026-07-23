@@ -45,6 +45,8 @@ export type Space = {
   updatedAt: number;
 };
 
+export type SpacesView = "grid" | "list";
+
 // Portable snapshot for export/import — mirrors the persisted (partialized) state.
 export type BackupData = {
   providers: Record<string, ProviderConfig>;
@@ -85,6 +87,7 @@ type State = {
   assistantAvatar: string;
 
   // Spaces
+  spacesView: SpacesView;
   spaces: Space[];
 
   // Actions — provider
@@ -105,6 +108,7 @@ type State = {
     threadId: string,
     content: string
   ) => void;
+  removeMessage: (chatId: string, threadId: string, messageId: string) => void;
   createBranch: (
     chatId: string,
     parentThreadId: string,
@@ -129,6 +133,7 @@ type State = {
   setAvatar: (role: "user" | "assistant", value: string) => void;
 
   // Actions — spaces
+  setSpacesView: (v: SpacesView) => void;
   newSpace: () => string;
   updateSpace: (id: string, patch: Partial<Omit<Space, "id" | "createdAt">>) => void;
   deleteSpace: (id: string) => void;
@@ -213,6 +218,7 @@ export const useStore = create<State>()(
       userAvatar: "",
       assistantAvatar: "",
 
+      spacesView: "grid",
       spaces: [],
 
       setActiveProvider: (id) => set({ activeProviderId: id }),
@@ -400,6 +406,23 @@ export const useStore = create<State>()(
         }),
       clearAllChats: () => set({ chats: [], activeChatId: null }),
 
+      removeMessage: (chatId, threadId, messageId) =>
+        set((s) => ({
+          chats: s.chats.map((c) =>
+            c.id === chatId
+              ? {
+                  ...c,
+                  updatedAt: Date.now(),
+                  threads: c.threads.map((t) =>
+                    t.id === threadId
+                      ? { ...t, messages: t.messages.filter((m) => m.id !== messageId) }
+                      : t
+                  ),
+                }
+              : c
+          ),
+        })),
+
       getBackupData: (includeKeys) => {
         const s = get();
         const providers = includeKeys
@@ -481,6 +504,7 @@ export const useStore = create<State>()(
       setAvatar: (role, value) =>
         set(role === "user" ? { userAvatar: value } : { assistantAvatar: value }),
 
+      setSpacesView: (v) => set({ spacesView: v }),
       newSpace: () => {
         const id = makeId();
         const now = Date.now();
@@ -525,6 +549,7 @@ export const useStore = create<State>()(
         generalInstructions: s.generalInstructions,
         userAvatar: s.userAvatar,
         assistantAvatar: s.assistantAvatar,
+        spacesView: s.spacesView,
         spaces: s.spaces,
       }),
       // Migrate legacy chats synchronously as state is rehydrated, so no

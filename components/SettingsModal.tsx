@@ -395,7 +395,7 @@ function DataTab() {
   return (
     <div className="space-y-6">
       <section className="space-y-2">
-        <label className="text-sm font-medium">Export</label>
+        <label className="text-lg font-bold">Export</label>
         <p className="text-xs text-muted">
           Download a JSON backup of your chats, spaces, and settings.
         </p>
@@ -416,7 +416,7 @@ function DataTab() {
         <div>
           <button
             onClick={doExport}
-            className="inline-flex items-center gap-2 text-sm border rounded-app px-3 py-2 hover:bg-surface-2 transition"
+            className="inline-flex items-center gap-2 bg- font-mono text-sm border rounded-app px-3 py-2 bg-accent hover:bg-transparent transition"
           >
             <Download size={14} /> Export backup
           </button>
@@ -424,7 +424,7 @@ function DataTab() {
       </section>
 
       <section className="pt-4 border-t space-y-2">
-        <label className="text-sm font-medium">Import</label>
+        <label className="text-lg font-bold">Import</label>
         <p className="text-xs text-muted">
           Load a backup file, then choose to replace everything or merge it in.
         </p>
@@ -441,7 +441,7 @@ function DataTab() {
         {!pending ? (
           <button
             onClick={() => fileRef.current?.click()}
-            className="inline-flex items-center gap-2 text-sm border rounded-app px-3 py-2 hover:bg-surface-2 transition"
+            className="inline-flex items-center gap-2 bg-accent text-sm font-mono border rounded-app px-3 py-2 hover:bg-transparent transition"
           >
             <Upload size={14} /> Choose backup file…
           </button>

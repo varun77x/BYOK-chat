@@ -88,6 +88,7 @@ export function ChatView() {
   const setActiveChat = useStore((s) => s.setActiveChat);
   const appendMessage = useStore((s) => s.appendMessage);
   const updateLastAssistantMessage = useStore((s) => s.updateLastAssistantMessage);
+  const removeMessage = useStore((s) => s.removeMessage);
   const createBranch = useStore((s) => s.createBranch);
   const renameChat = useStore((s) => s.renameChat);
   const renameThread = useStore((s) => s.renameThread);
@@ -142,6 +143,7 @@ export function ChatView() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<{ message: string; retry: () => void } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -348,6 +350,151 @@ export function ChatView() {
     toast("Branch deleted");
   };
 
+  const isAbort = (e: unknown) =>
+    e instanceof DOMException && e.name === "AbortError";
+
+  const isMessageEmpty = (
+    chatId: string,
+    threadId: string,
+    messageId: string
+  ): boolean => {
+    const m = useStore
+      .getState()
+      .chats.find((c) => c.id === chatId)
+      ?.threads.find((t) => t.id === threadId)
+      ?.messages.find((mm) => mm.id === messageId);
+    if (!m) return true;
+    return typeof m.content === "string"
+      ? !m.content.trim()
+      : m.content.length === 0;
+  };
+
+  // Shared streaming core: builds the API context for the thread and streams the
+  // reply INTO the thread's current last (assistant) message. Throws on failure.
+  const streamReplyInto = async (
+    chatId: string,
+    threadId: string,
+    signal: AbortSignal
+  ) => {
+    const latest = useStore.getState().chats.find((c) => c.id === chatId)!;
+
+    if (modelIsImageGen) {
+      const thread = latest.threads.find((t) => t.id === threadId);
+      const lastUser = thread
+        ? [...thread.messages].reverse().find((m) => m.role === "user")
+        : undefined;
+      const prompt = lastUser ? messageText(lastUser) : "";
+      const images = await withRetry(
+        () =>
+          generateImage({
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey,
+            model: provider.model,
+            prompt,
+            signal,
+          }),
+        3
+      );
+      const md = images
+        .map((img, i) => {
+          const src = img.url ?? (img.b64_json ? `data:image/png;base64,${img.b64_json}` : "");
+          return src ? `![generated ${i + 1}](${src})` : "";
+        })
+        .filter(Boolean)
+        .join("\n\n");
+      updateLastAssistantMessage(chatId, threadId, md || "(no image returned)");
+      return;
+    }
+
+    // Inherited ancestor context + this thread's messages, minus the trailing
+    // (empty) assistant placeholder we're about to fill.
+    const ctx = buildContext(latest, threadId).filter(
+      (m, idx, arr) => !(idx === arr.length - 1 && m.role === "assistant")
+    );
+    const trimmedCtx = truncateHistory(toApiMessages(ctx), historyTurns);
+
+    // System message = general + space instructions (general first).
+    const chatSpace = latest.spaceId
+      ? spaces.find((sp) => sp.id === latest.spaceId)
+      : null;
+    const systemText = [generalInstructions, chatSpace?.instructions]
+      .map((s) => s?.trim())
+      .filter(Boolean)
+      .join("\n\n");
+    const withSystem: ChatMessage[] = systemText
+      ? [{ role: "system", content: systemText }, ...trimmedCtx]
+      : trimmedCtx;
+
+    let full = "";
+    // Throttle store writes to ~1 per 80ms during streaming.
+    const FLUSH_INTERVAL_MS = 80;
+    await withRetry(async (attempt) => {
+      full = "";
+      let lastFlush = 0;
+      let pending = false;
+      if (attempt > 1) {
+        toast(`Retrying (attempt ${attempt}/3)...`);
+      }
+      for await (const delta of streamChat({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: provider.model,
+        messages: withSystem,
+        signal,
+      })) {
+        full += delta;
+        const now =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        if (now - lastFlush >= FLUSH_INTERVAL_MS) {
+          updateLastAssistantMessage(chatId, threadId, full);
+          lastFlush = now;
+          pending = false;
+        } else {
+          pending = true;
+        }
+      }
+      if (pending || full.length > 0) {
+        updateLastAssistantMessage(chatId, threadId, full);
+      }
+    }, 3);
+  };
+
+  // Append a fresh assistant placeholder for the thread's trailing user turn and
+  // stream a reply into it. On failure the placeholder is REMOVED — never stored
+  // as an "**Error:**" message that would otherwise leak into future context —
+  // and the error is surfaced in a dismissible banner with a Retry.
+  const generateForLastUserTurn = async (chatId: string, threadId: string) => {
+    const assistantId = appendMessage(
+      chatId,
+      threadId,
+      { role: "assistant", content: "" },
+      provider.model
+    );
+    setSending(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      await streamReplyInto(chatId, threadId, controller.signal);
+    } catch (e) {
+      if (isAbort(e)) {
+        // Stopped by the user — keep any streamed text, drop an empty bubble.
+        if (isMessageEmpty(chatId, threadId, assistantId)) {
+          removeMessage(chatId, threadId, assistantId);
+        }
+        return;
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      removeMessage(chatId, threadId, assistantId);
+      setSendError({
+        message: msg,
+        retry: () => generateForLastUserTurn(chatId, threadId),
+      });
+    } finally {
+      setSending(false);
+      abortRef.current = null;
+    }
+  };
+
   const send = async () => {
     if (sending) return;
     const trimmed = input.trim();
@@ -357,6 +504,7 @@ export function ChatView() {
       return;
     }
     setError(null);
+    setSendError(null);
 
     let chatId = activeChatId;
     let threadId = activeThreadId;
@@ -388,104 +536,13 @@ export function ChatView() {
       (targetThreadBefore?.messages.length ?? 0) === 0;
 
     appendMessage(chatId, threadId, { role: "user", content }, provider.model);
-    appendMessage(chatId, threadId, { role: "assistant", content: "" }, provider.model);
-
     if (isFirstRootMessage && trimmed) {
       renameChat(chatId, trimmed.slice(0, 40));
     }
 
     setInput("");
     setAttachments([]);
-    setSending(true);
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      if (modelIsImageGen) {
-        const images = await withRetry(
-          () =>
-            generateImage({
-              baseUrl: provider.baseUrl,
-              apiKey: provider.apiKey,
-              model: provider.model,
-              prompt: trimmed,
-              signal: controller.signal,
-            }),
-          3,
-        );
-        const md = images
-          .map((img, i) => {
-            const src = img.url ?? (img.b64_json ? `data:image/png;base64,${img.b64_json}` : "");
-            return src ? `![generated ${i + 1}](${src})` : "";
-          })
-          .filter(Boolean)
-          .join("\n\n");
-        updateLastAssistantMessage(chatId, threadId, md || "(no image returned)");
-      } else {
-        // Build the API context from the active thread: inherited ancestor
-        // context (parents up to their anchor) + this thread's messages.
-        const latest = useStore.getState().chats.find((c) => c.id === chatId)!;
-        const ctx = buildContext(latest, threadId).filter(
-          (m, idx, arr) => !(idx === arr.length - 1 && m.role === "assistant")
-        );
-        const trimmedCtx = truncateHistory(toApiMessages(ctx), historyTurns);
-
-        // System message = general + space instructions (general first).
-        // Rebuilt each send so the latest instructions always apply.
-        const chatSpace = latest.spaceId
-          ? spaces.find((sp) => sp.id === latest.spaceId)
-          : null;
-        const systemText = [generalInstructions, chatSpace?.instructions]
-          .map((s) => s?.trim())
-          .filter(Boolean)
-          .join("\n\n");
-        const withSystem: ChatMessage[] = systemText
-          ? [{ role: "system", content: systemText }, ...trimmedCtx]
-          : trimmedCtx;
-
-        let full = "";
-        // Throttle store writes to ~1 per 80ms during streaming; each flush
-        // persists state and re-parses growing markdown.
-        const FLUSH_INTERVAL_MS = 80;
-
-        await withRetry(async (attempt) => {
-          // Reset stream state on each retry.
-          full = "";
-          let lastFlush = 0;
-          let pending = false;
-          if (attempt > 1) {
-            toast(`Retrying (attempt ${attempt}/3)...`);
-          }
-          for await (const delta of streamChat({
-            baseUrl: provider.baseUrl,
-            apiKey: provider.apiKey,
-            model: provider.model,
-            messages: withSystem,
-            signal: controller.signal,
-          })) {
-            full += delta;
-            const now =
-              typeof performance !== "undefined" ? performance.now() : Date.now();
-            if (now - lastFlush >= FLUSH_INTERVAL_MS) {
-              updateLastAssistantMessage(chatId, threadId, full);
-              lastFlush = now;
-              pending = false;
-            } else {
-              pending = true;
-            }
-          }
-          if (pending || full.length > 0) {
-            updateLastAssistantMessage(chatId, threadId, full);
-          }
-        }, 3);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      updateLastAssistantMessage(chatId, threadId, `**Error:** ${msg}`);
-    } finally {
-      setSending(false);
-      abortRef.current = null;
-    }
+    await generateForLastUserTurn(chatId, threadId);
   };
 
   const stop = () => {
@@ -500,87 +557,40 @@ export function ChatView() {
     if (!thread) return;
     const idx = thread.messages.findIndex((m) => m.id === messageId);
     // Only allow regenerating the last assistant message.
-    if (idx === -1 || idx !== thread.messages.length - 1 || thread.messages[idx].role !== "assistant") return;
+    if (
+      idx === -1 ||
+      idx !== thread.messages.length - 1 ||
+      thread.messages[idx].role !== "assistant"
+    )
+      return;
     const userMsg = thread.messages[idx - 1];
     if (!userMsg || userMsg.role !== "user") return;
 
-    // Clear the assistant message so it shows as streaming.
-    updateLastAssistantMessage(chat.id, activeThreadId, "");
+    const chatId = chat.id;
+    const threadId = activeThreadId;
+    // Remember the current reply so a failed regeneration restores it instead of
+    // overwriting it with an error string.
+    const original = messageText(thread.messages[idx]);
+
+    setError(null);
+    setSendError(null);
+    updateLastAssistantMessage(chatId, threadId, ""); // clear → shows as streaming
     setSending(true);
     const controller = new AbortController();
     abortRef.current = controller;
-
     try {
-      if (modelIsImageGen) {
-        const promptText = messageText(userMsg);
-        const images = await withRetry(
-          () =>
-            generateImage({
-              baseUrl: provider.baseUrl,
-              apiKey: provider.apiKey,
-              model: provider.model,
-              prompt: promptText,
-              signal: controller.signal,
-            }),
-          3,
-        );
-        const md = images
-          .map((img, i) => {
-            const src = img.url ?? (img.b64_json ? `data:image/png;base64,${img.b64_json}` : "");
-            return src ? `![generated ${i + 1}](${src})` : "";
-          })
-          .filter(Boolean)
-          .join("\n\n");
-        updateLastAssistantMessage(chat.id, activeThreadId, md || "(no image returned)");
-      } else {
-        const latest = useStore.getState().chats.find((c) => c.id === chat.id)!;
-        const ctx = buildContext(latest, activeThreadId).filter(
-          (m, idx2, arr) => !(idx2 === arr.length - 1 && m.role === "assistant")
-        );
-        const trimmedCtx = truncateHistory(toApiMessages(ctx), historyTurns);
-        const chatSpace = latest.spaceId
-          ? spaces.find((sp) => sp.id === latest.spaceId)
-          : null;
-        const systemText = [generalInstructions, chatSpace?.instructions]
-          .map((s) => s?.trim())
-          .filter(Boolean)
-          .join("\n\n");
-        const withSystem: ChatMessage[] = systemText
-          ? [{ role: "system", content: systemText }, ...trimmedCtx]
-          : trimmedCtx;
-
-        let full = "";
-        const FLUSH_INTERVAL_MS = 80;
-        await withRetry(async (attempt) => {
-          full = "";
-          let lastFlush = 0;
-          let pending = false;
-          if (attempt > 1) toast(`Retrying (attempt ${attempt}/3)...`);
-          for await (const delta of streamChat({
-            baseUrl: provider.baseUrl,
-            apiKey: provider.apiKey,
-            model: provider.model,
-            messages: withSystem,
-            signal: controller.signal,
-          })) {
-            full += delta;
-            const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-            if (now - lastFlush >= FLUSH_INTERVAL_MS) {
-              updateLastAssistantMessage(chat.id, activeThreadId, full);
-              lastFlush = now;
-              pending = false;
-            } else {
-              pending = true;
-            }
-          }
-          if (pending || full.length > 0) {
-            updateLastAssistantMessage(chat.id, activeThreadId, full);
-          }
-        }, 3);
-      }
+      await streamReplyInto(chatId, threadId, controller.signal);
     } catch (e) {
+      if (isAbort(e)) {
+        // Stopped by the user — keep any streamed text, else restore original.
+        if (isMessageEmpty(chatId, threadId, messageId)) {
+          updateLastAssistantMessage(chatId, threadId, original);
+        }
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
-      updateLastAssistantMessage(chat.id, activeThreadId, `**Error:** ${msg}`);
+      updateLastAssistantMessage(chatId, threadId, original); // restore, don't store error
+      setSendError({ message: msg, retry: () => handleRegenerate(messageId) });
     } finally {
       setSending(false);
       abortRef.current = null;
@@ -740,6 +750,32 @@ export function ChatView() {
       <div className="border-t p-3 shrink-0">
         <div className="max-w-5xl mx-auto">
           {error && <div className="mb-2 text-sm text-danger">{error}</div>}
+          {sendError && (
+            <div className="mb-2 flex items-start justify-between gap-3 rounded-app border border-danger/40 bg-danger/10 px-3 py-2 text-sm">
+              <span className="min-w-0 break-words text-danger">
+                {sendError.message}
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => {
+                    const retry = sendError.retry;
+                    setSendError(null);
+                    retry();
+                  }}
+                  className="font-medium text-danger hover:underline"
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={() => setSendError(null)}
+                  className="text-muted hover:text-text"
+                  aria-label="Dismiss error"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-2">
               {attachments.map((a, i) => (
