@@ -15,7 +15,7 @@ export const PROVIDERS: ProviderPreset[] = [
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
     docsUrl: "https://api-docs.deepseek.com/",
-    suggestedModels: ["deepseek-chat", "deepseek-reasoner"],
+    suggestedModels: ["deepseek-v4-flash", "deepseek-v4-pro"],
     keyPrefix: "sk-",
   },
   {
@@ -30,8 +30,8 @@ export const PROVIDERS: ProviderPreset[] = [
       "anthropic/claude-3-opus",
       "google/gemini-2.0-flash-exp",
       "meta-llama/llama-3.3-70b-instruct",
-      "deepseek/deepseek-chat",
-      "deepseek/deepseek-r1",
+      "deepseek/deepseek-v4-flash",
+      "deepseek/deepseek-v4-pro",
       "x-ai/grok-2-vision",
     ],
     visionModels: [
