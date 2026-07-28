@@ -151,6 +151,7 @@ export function ChatView() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [selectedText, setSelectedText] = useState("");
+  const [selectedMsgId, setSelectedMsgId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const scrollPositions = useRef<Map<string, number>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
@@ -370,12 +371,20 @@ export function ChatView() {
     const update = () => {
       const sel = window.getSelection();
       const container = scrollRef.current;
-      if (!sel || sel.isCollapsed || !container) {
+      const node = sel?.focusNode ?? sel?.anchorNode ?? null;
+      if (!sel || sel.isCollapsed || !container || !node || !container.contains(node)) {
         setSelectedText("");
+        setSelectedMsgId(null);
         return;
       }
-      const within = !!sel.anchorNode && container.contains(sel.anchorNode);
-      setSelectedText(within ? sel.toString().trim() : "");
+      setSelectedText(sel.toString().trim());
+      // Which message the selection sits in (for "Quote & branch").
+      const el =
+        node.nodeType === Node.ELEMENT_NODE
+          ? (node as Element)
+          : node.parentElement;
+      const msgEl = el?.closest<HTMLElement>("[data-msg-id]");
+      setSelectedMsgId(msgEl?.dataset.msgId ?? null);
     };
     document.addEventListener("mouseup", update);
     document.addEventListener("keyup", update);
@@ -396,6 +405,44 @@ export function ChatView() {
     setInput((prev) => `${quote}\n\n${prev}`);
     setSelectedText("");
     window.getSelection()?.removeAllRanges();
+    focusComposerEnd();
+  };
+
+  // Open a NEW branch (anchored at the message the selection is in) with the
+  // quoted text pre-filled in the branch's composer.
+  const quoteAndBranch = () => {
+    const text = selectedText.trim();
+    if (!text || !chat || !activeThread) return;
+    const msgs = activeThread.messages;
+    let anchorIdx = selectedMsgId
+      ? msgs.findIndex((m) => m.id === selectedMsgId)
+      : msgs.length - 1;
+    if (anchorIdx < 0) anchorIdx = msgs.length - 1;
+    // Anchor on an assistant message so the branch forks on a clean turn
+    // boundary — never leaving two user messages back-to-back in context.
+    if (
+      msgs[anchorIdx]?.role === "user" &&
+      msgs[anchorIdx + 1]?.role === "assistant"
+    ) {
+      anchorIdx += 1;
+    }
+    const anchorId = msgs[anchorIdx]?.id;
+    if (!anchorId) return;
+    const quote = text
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n");
+    const newThreadId = createBranch(chat.id, activeThread.id, anchorId);
+    setActiveThreadId(newThreadId);
+    setInput(`${quote}\n\n`);
+    setSelectedText("");
+    setSelectedMsgId(null);
+    window.getSelection()?.removeAllRanges();
+    toast("Branch created");
+    focusComposerEnd();
+  };
+
+  const focusComposerEnd = () => {
     requestAnimationFrame(() => {
       const el = composerRef.current;
       if (el) {
@@ -682,14 +729,22 @@ export function ChatView() {
   return (
     <div className="relative flex flex-col h-full min-h-0">
       {selectedText && (
-        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-end border-b bg-bg/95 backdrop-blur px-4 py-1.5">
+        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-end gap-2 border-b bg-bg/95 backdrop-blur px-4 py-1.5">
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={quoteSelection}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-app border text-xs hover:bg-surface-2 transition"
-            title="Quote the selected text in your message"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-app border text-xs text-user-bubble-fg hover:bg-surface-2 transition"
+            title="Quote the selection in your message"
           >
             <Quote size={13} /> Quote selection
+          </button>
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={quoteAndBranch}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-app border border-accent text-user-bubble-fg text-xs hover:bg-surface-2 transition"
+            title="Start a new branch here with the selection quoted"
+          >
+            <GitBranch size={13} /> Quote &amp; branch
           </button>
         </div>
       )}
@@ -1169,6 +1224,7 @@ function MessageRow({
   return (
     <div
       data-role={message.role}
+      data-msg-id={message.id}
       className={clsx("flex gap-3 group min-w-0", isUser ? "flex-row-reverse" : "flex-row")}
     >
       <MessageAvatar isUser={isUser} />
