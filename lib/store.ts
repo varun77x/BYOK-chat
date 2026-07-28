@@ -109,6 +109,7 @@ type State = {
     content: string
   ) => void;
   removeMessage: (chatId: string, threadId: string, messageId: string) => void;
+  revertToMessage: (chatId: string, threadId: string, messageId: string) => void;
   createBranch: (
     chatId: string,
     parentThreadId: string,
@@ -422,6 +423,46 @@ export const useStore = create<State>()(
               : c
           ),
         })),
+
+      // Revert a thread to just before `messageId`: drop that message and every
+      // message after it, plus any branches anchored to a removed message (and
+      // their descendants). Used by "Revert to here".
+      revertToMessage: (chatId, threadId, messageId) =>
+        set((s) => {
+          const chat = s.chats.find((c) => c.id === chatId);
+          if (!chat) return s;
+          const thread = chat.threads.find((t) => t.id === threadId);
+          if (!thread) return s;
+          const idx = thread.messages.findIndex((m) => m.id === messageId);
+          if (idx === -1) return s;
+
+          const removedIds = new Set(
+            thread.messages.slice(idx).map((m) => m.id)
+          );
+          const kept = thread.messages.slice(0, idx);
+
+          const drop = new Set<string>();
+          for (const t of chat.threads) {
+            if (
+              t.parentThreadId === threadId &&
+              t.anchorMessageId &&
+              removedIds.has(t.anchorMessageId)
+            ) {
+              drop.add(t.id);
+              for (const d of descendantThreadIds(chat, t.id)) drop.add(d);
+            }
+          }
+
+          const threads = chat.threads
+            .filter((t) => !drop.has(t.id))
+            .map((t) => (t.id === threadId ? { ...t, messages: kept } : t));
+
+          return {
+            chats: s.chats.map((c) =>
+              c.id === chatId ? { ...c, updatedAt: Date.now(), threads } : c
+            ),
+          };
+        }),
 
       getBackupData: (includeKeys) => {
         const s = get();

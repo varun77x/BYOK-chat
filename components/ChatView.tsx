@@ -11,8 +11,10 @@ import {
   Bot,
   User,
   Maximize2,
+  Quote,
   Copy,
   GitBranch,
+  Undo2,
   ChevronRight,
   ChevronUp,
   ChevronDown,
@@ -89,6 +91,7 @@ export function ChatView() {
   const appendMessage = useStore((s) => s.appendMessage);
   const updateLastAssistantMessage = useStore((s) => s.updateLastAssistantMessage);
   const removeMessage = useStore((s) => s.removeMessage);
+  const revertToMessage = useStore((s) => s.revertToMessage);
   const createBranch = useStore((s) => s.createBranch);
   const renameChat = useStore((s) => s.renameChat);
   const renameThread = useStore((s) => s.renameThread);
@@ -146,6 +149,8 @@ export function ChatView() {
   const [sendError, setSendError] = useState<{ message: string; retry: () => void } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const [selectedText, setSelectedText] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   const scrollPositions = useRef<Map<string, number>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
@@ -328,6 +333,77 @@ export function ChatView() {
     const newThreadId = createBranch(chat.id, activeThread.id, messageId);
     setActiveThreadId(newThreadId);
     toast("Branch created");
+  };
+
+  const revertToHere = async (messageId: string) => {
+    if (sending || !chat || !activeThread) return;
+    const msg = activeThread.messages.find((m) => m.id === messageId);
+    if (!msg || msg.role !== "user") return;
+    const ok = await confirmDialog({
+      title: "Revert to this point?",
+      message:
+        "This deletes this prompt and everything after it, and puts the prompt back in the composer to edit. It can't be undone.",
+      confirmLabel: "Revert",
+      danger: true,
+    });
+    if (!ok) return;
+    // Restore the prompt (text + any image attachments) into the composer.
+    const text = messageText(msg);
+    const imgs: Attachment[] =
+      typeof msg.content === "string"
+        ? []
+        : msg.content
+            .filter(
+              (p): p is { type: "image_url"; image_url: { url: string } } =>
+                p.type === "image_url"
+            )
+            .map((p, i) => ({ name: `image-${i + 1}`, dataUrl: p.image_url.url }));
+    revertToMessage(chat.id, activeThread.id, messageId);
+    setError(null);
+    setSendError(null);
+    setInput(text);
+    setAttachments(imgs);
+  };
+
+  // Track text selected inside the chat area — reveals the Quote button.
+  useEffect(() => {
+    const update = () => {
+      const sel = window.getSelection();
+      const container = scrollRef.current;
+      if (!sel || sel.isCollapsed || !container) {
+        setSelectedText("");
+        return;
+      }
+      const within = !!sel.anchorNode && container.contains(sel.anchorNode);
+      setSelectedText(within ? sel.toString().trim() : "");
+    };
+    document.addEventListener("mouseup", update);
+    document.addEventListener("keyup", update);
+    return () => {
+      document.removeEventListener("mouseup", update);
+      document.removeEventListener("keyup", update);
+    };
+  }, []);
+
+  // Turn the current selection into a "> …" blockquote at the top of the composer.
+  const quoteSelection = () => {
+    const text = selectedText.trim();
+    if (!text) return;
+    const quote = text
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n");
+    setInput((prev) => `${quote}\n\n${prev}`);
+    setSelectedText("");
+    window.getSelection()?.removeAllRanges();
+    requestAnimationFrame(() => {
+      const el = composerRef.current;
+      if (el) {
+        el.focus();
+        const len = el.value.length;
+        el.setSelectionRange(len, len);
+      }
+    });
   };
 
   const handleDeleteBranch = async () => {
@@ -604,7 +680,19 @@ export function ChatView() {
   );
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="relative flex flex-col h-full min-h-0">
+      {selectedText && (
+        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-end border-b bg-bg/95 backdrop-blur px-4 py-1.5">
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={quoteSelection}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-app border text-xs hover:bg-surface-2 transition"
+            title="Quote the selected text in your message"
+          >
+            <Quote size={13} /> Quote selection
+          </button>
+        </div>
+      )}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative">
         {chat && path.length > 1 && (
           <div data-breadcrumb className="sticky top-0 z-10 bg-bg/95 backdrop-blur border-b px-4 py-2 flex items-center gap-1 text-xs flex-wrap">
@@ -703,6 +791,7 @@ export function ChatView() {
                 onCopy={copyMessage}
                 onBranch={branchFrom}
                 onRegenerate={handleRegenerate}
+                onRevert={revertToHere}
                 isLastMessage={i === messages.length - 1}
                 onNavigate={setActiveThreadId}
                 onRename={(threadId, title) => {
@@ -835,7 +924,7 @@ export function ChatView() {
               </span>
             )}
           </div>
-          <div className="flex items-end gap-2 bg-surface-2 border rounded-app p-2">
+          <div className="flex items-end gap-2 bg-surface-2 border rounded-app pr-2 pl-2 pt-1 pb-1">
             {modelSupportsVision && (
               <>
                 <input
@@ -864,6 +953,7 @@ export function ChatView() {
               </div>
             )}
             <textarea
+              ref={composerRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -1048,6 +1138,7 @@ function MessageRow({
   onCopy,
   onBranch,
   onRegenerate,
+  onRevert,
   isLastMessage,
   onNavigate,
   onRename,
@@ -1058,6 +1149,7 @@ function MessageRow({
   onCopy: (text: string) => void;
   onBranch: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
+  onRevert: (messageId: string) => void;
   isLastMessage: boolean;
   onNavigate: (threadId: string) => void;
   onRename: (threadId: string, title: string) => void;
@@ -1102,6 +1194,15 @@ function MessageRow({
             >
               <Copy size={13} />
             </button>
+            {isUser && (
+              <button
+                onClick={() => onRevert(message.id)}
+                className="p-1 rounded-app hover:text-text hover:bg-surface-2 opacity-0 group-hover:opacity-100 transition"
+                title="Revert to here — delete this prompt and everything after"
+              >
+                <Undo2 size={13} />
+              </button>
+            )}
             {!isUser && (
               <button
                 onClick={() => onBranch(message.id)}
