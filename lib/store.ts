@@ -146,7 +146,7 @@ function defaultProviders(): Record<string, ProviderConfig> {
       providerId: "deepseek",
       baseUrl: "https://api.deepseek.com/v1",
       apiKey: "",
-      model: "deepseek-chat",
+      model: "deepseek-v4-flash",
       customModels: [],
     },
     openrouter: {
